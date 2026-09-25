@@ -4,7 +4,6 @@ import io
 import json
 import os
 import time
-import uuid
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -32,13 +31,11 @@ def format_german_date(date_iso_str):
         return date_iso_str
 
 def load_data():
-    """Lädt Events und User-Dictionary aus der JSON-Datei."""
+    """Lädt Events und User-Dictionary (Name -> Passwort) aus der JSON-Datei."""
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data.get("users"), list):
-                    data["users"] = {u: u for u in data["users"]}
                 if "users" not in data or not isinstance(data["users"], dict):
                     data["users"] = {}
                 if "events" not in data:
@@ -53,14 +50,14 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def delete_user_completely(data, target_uid):
+def delete_user_completely(data, target_username):
     """Löscht einen User spurlos: Aus dem Register & aus allen Abstimmungen."""
-    if target_uid in data.get("users", {}):
-        del data["users"][target_uid]
+    if target_username in data.get("users", {}):
+        del data["users"][target_username]
     
     for event in data.get("events", []):
-        if target_uid in event.get("voters", []):
-            event["voters"].remove(target_uid)
+        if target_username in event.get("voters", []):
+            event["voters"].remove(target_username)
             event["votes"] = len(event["voters"])
             
     save_data(data)
@@ -86,64 +83,69 @@ ADMIN_PIN = st.secrets.get("ADMIN_PIN", "1234")
 data = load_data()
 
 # ---------------------------------------------------------
-# Benutzer-Erkennung über Query-Parameter (Ohne fehlerhaftes Iframe-LocalStorage)
+# Session State & Login-Verwaltung (Name & Passwort)
 # ---------------------------------------------------------
-current_user_id = st.query_params.get("user_id", "")
-
-# Entwickler-Komfort für den lokalen Debugger (automatischer Login als Matthias)
-if not current_user_id and "DEV_USER_ID" in st.secrets:
-    current_user_id = st.secrets["DEV_USER_ID"]
-    dev_name = st.secrets.get("DEV_USER_NAME", "Matthias")
-    
-    if current_user_id not in data.get("users", {}):
-        data["users"][current_user_id] = dev_name
-        save_data(data)
-        
-    st.query_params["user_id"] = current_user_id
-
-if "edit_name" not in st.session_state:
-    st.session_state.edit_name = False
+if "logged_in_user" not in st.session_state:
+    st.session_state.logged_in_user = None
 
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
 
-current_user_name = data["users"].get(current_user_id, "")
+# Entwickler-Komfort für den lokalen Debugger (automatischer Login)
+if not st.session_state.logged_in_user and "DEV_USER_NAME" in st.secrets:
+    dev_name = st.secrets.get("DEV_USER_NAME", "Matthias")
+    dev_pass = st.secrets.get("DEV_USER_PASS", "1234")
+    if dev_name not in data["users"]:
+        data["users"][dev_name] = dev_pass
+        save_data(data)
+    st.session_state.logged_in_user = dev_name
 
-# ---------------------------------------------------------
-# Name-Eingabe (Mit Eindeutigkeits-Prüfung)
-# ---------------------------------------------------------
-if not current_user_id or not current_user_name or st.session_state.edit_name:
-    st.title("🎉 Event Planner")
-    st.warning("👋 Bitte gib deinen Namen für die Abstimmung ein.")
-    input_name = st.text_input("Dein Name (z. B. Alex):", value=current_user_name)
+# Wenn nicht eingeloggt: Login- / Registrierungs-Bildschirm anzeigen
+if not st.session_state.logged_in_user:
+    st.title("🎉 Event Planner - Login")
+    st.warning("👋 Bitte melde dich an oder registriere dich mit deinem Namen und einem Passwort.")
+    
+    with st.form("login_form"):
+        input_name = st.text_input("Name (z. B. Matthias):")
+        input_pass = st.text_input("Passwort:", type="password")
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            submit_login = st.form_submit_button("Anmelden", type="primary")
+        with col_f2:
+            submit_register = st.form_submit_button("Neu registrieren")
 
-    if st.button("Name speichern"):
-        cleaned_name = input_name.strip()
+        if submit_login:
+            name_clean = input_name.strip()
+            users_db = data.get("users", {})
+            if not name_clean or not input_pass:
+                st.error("Bitte Name und Passwort eingeben.")
+            elif name_clean in users_db and users_db[name_clean] == input_pass:
+                st.session_state.logged_in_user = name_clean
+                st.success("Erfolgreich angemeldet!")
+                st.rerun()
+            else:
+                st.error("Falscher Name oder falsches Passwort.")
 
-        other_names_lower = [
-            name.lower()
-            for uid, name in data.get("users", {}).items()
-            if uid != current_user_id
-        ]
-
-        if not cleaned_name:
-            st.error("Bitte gib einen gültigen Namen ein.")
-        elif cleaned_name.lower() in other_names_lower:
-            st.error(
-                f"⚠️ Der Name '{cleaned_name}' ist bereits vergeben! "
-                "Bitte wähle einen anderen Namen oder füge ein Kürzel an."
-            )
-        else:
-            if not current_user_id:
-                current_user_id = f"usr_{uuid.uuid4().hex[:8]}"
-
-            data["users"][current_user_id] = cleaned_name
-            save_data(data)
-
-            st.query_params["user_id"] = current_user_id
-            st.session_state.edit_name = False
-            st.rerun()
+        if submit_register:
+            name_clean = input_name.strip()
+            users_db = data.get("users", {})
+            if not name_clean:
+                st.error("Bitte gib einen Namen ein.")
+            elif not input_pass:
+                st.error("Bitte gib ein Passwort ein.")
+            elif name_clean in users_db:
+                st.error("Dieser Name ist bereits vergeben. Bitte wähle einen anderen oder melde dich an.")
+            else:
+                users_db[name_clean] = input_pass
+                data["users"] = users_db
+                save_data(data)
+                st.session_state.logged_in_user = name_clean
+                st.success("Erfolgreich registriert und eingeloggt!")
+                st.rerun()
     st.stop()
+
+current_user_name = st.session_state.logged_in_user
 
 # ---------------------------------------------------------
 # Sidebar / Admin-Modus (User- & Archiv-Verwaltung)
@@ -151,8 +153,8 @@ if not current_user_id or not current_user_name or st.session_state.edit_name:
 st.sidebar.title("👤 Profil & Admin")
 st.sidebar.write(f"Eingeloggt als: **{current_user_name}**")
 
-if st.sidebar.button("✏️ Name ändern"):
-    st.session_state.edit_name = True
+if st.sidebar.button("🚪 Abmelden"):
+    st.session_state.logged_in_user = None
     st.rerun()
 
 st.sidebar.divider()
@@ -169,11 +171,11 @@ if is_admin:
         if not users_dict:
             st.info("Keine User registriert.")
         else:
-            for uid, uname in list(users_dict.items()):
+            for uname in list(users_dict.keys()):
                 ucol1, ucol2 = st.columns([3, 1])
                 ucol1.write(f"• **{uname}**")
-                if ucol2.button("🗑️", key=f"del_user_{uid}"):
-                    delete_user_completely(data, uid)
+                if ucol2.button("🗑️", key=f"del_user_{uname}"):
+                    delete_user_completely(data, uname)
                     st.sidebar.success(f"User '{uname}' & Stimmen gelöscht!")
                     st.rerun()
 
@@ -319,19 +321,19 @@ if st.session_state.pending_event:
                 data["events"].append(final_event)
                 save_data(data)
                 st.session_state.pending_event = None
-                st.session_state.uploader_key += 1  # Uploader komplett zurücksetzen
+                st.session_state.uploader_key += 1  # Uploader zurücksetzen
                 st.success(f"Event '{edited_title}' veröffentlicht!")
                 st.rerun()
         with btn2:
             if st.button("❌ Abbrechen"):
                 st.session_state.pending_event = None
-                st.session_state.uploader_key += 1  # Uploader komplett zurücksetzen
+                st.session_state.uploader_key += 1  # Uploader zurücksetzen
                 st.rerun()
 
 st.divider()
 
 # ---------------------------------------------------------
-# Bereich 2: Event-Übersicht (Sortiert, gruppiert & Button unter Bild)
+# Bereich 2: Event-Übersicht (Kompakt & Einklappbare Beschreibung)
 # ---------------------------------------------------------
 st.header("2. Event-Übersicht & Abstimmung")
 
@@ -403,7 +405,7 @@ def render_event_list(event_list, is_past=False):
             if is_past:
                 st.info(f"🏆 **Endergebnis:** {len(voters_list)} Stimmen")
             else:
-                has_voted = current_user_id in voters_list
+                has_voted = current_user_name in voters_list
                 button_label = (
                     "❌ Stimme zurückziehen"
                     if has_voted
@@ -412,9 +414,9 @@ def render_event_list(event_list, is_past=False):
 
                 if st.button(button_label, key=f"vote_{event_id}", use_container_width=True):
                     if not has_voted:
-                        voters_list.append(current_user_id)
+                        voters_list.append(current_user_name)
                     else:
-                        voters_list.remove(current_user_id)
+                        voters_list.remove(current_user_name)
                     event["votes"] = len(voters_list)
                     save_data(data)
                     st.rerun()
@@ -425,11 +427,15 @@ def render_event_list(event_list, is_past=False):
                 f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))} | ⏰ **Uhrzeit:** {event.get('time', 'N/A')}"
             )
             st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
-            st.write(f"📝 {event.get('description', '')}")
+            
+            # Kleinere & einklappbare Beschreibung, um Scroll-Aufwand auf Smartphones zu minimieren
+            desc = event.get("description", "")
+            if desc:
+                with st.expander("📝 Beschreibung anzeigen", expanded=False):
+                    st.markdown(f"<small>{desc}</small>", unsafe_allow_html=True)
 
             if voters_list:
-                voter_names = [data["users"].get(uid, "Unbekannt") for uid in voters_list]
-                st.caption(f"Stimmen von: {', '.join(voter_names)}")
+                st.caption(f"Stimmen von: {', '.join(voters_list)}")
 
             if is_admin:
                 st.markdown("---")
