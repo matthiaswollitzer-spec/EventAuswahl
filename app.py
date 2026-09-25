@@ -5,7 +5,6 @@ import json
 import os
 import time
 import streamlit as st
-import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -107,8 +106,6 @@ if not st.session_state.logged_in_user:
     st.warning("👋 Bitte melde dich an oder registriere dich.")
     st.info("💡 **Tipp fürs Handy:** Falls der Passwort-Manager in WhatsApp nicht greift, öffne den Link über die drei Punkte im **echten Browser** (Chrome / Safari).")
 
-    # Unsichtbares HTML-Formular im Hintergrund, damit der Passwort-Manager (Google/Apple) 
-    # die Zugangsdaten erkennt und für die Streamlit-Felder bereitstellt.
     components.html("""
         <form style="opacity: 0; height: 0px; overflow: hidden;">
             <input type="text" name="username" autocomplete="username">
@@ -215,12 +212,12 @@ elif admin_pin_input:
 st.title("🎉 Event Planner")
 
 # ---------------------------------------------------------
-# KI-Analyse mit Gemini 3.8 Flash
+# KI-Analyse mit Gemini 3.8 Flash (Flyer & Screenshots)
 # ---------------------------------------------------------
 def analyze_flyer(image, key, max_retries=3):
     client = genai.Client(api_key=key)
     prompt = """
-    Analysiere diesen Flyer/Screenshot für ein Event oder eine Party. 
+    Analysiere diesen Flyer oder Screenshot (der auch mehrere Events enthalten kann, konzentriere dich auf das prominenteste oder erste Event). 
     Extrahiere folgende Informationen im exakten JSON-Format:
     {
         "title": "Name des Events",
@@ -253,35 +250,29 @@ if "pending_event" not in st.session_state:
     st.session_state.pending_event = None
 
 # ---------------------------------------------------------
-# Bereich 1: Uploader & Analyse (Mit Uploader-Reset-Key)
+# Bereich 1: Flyer / Screenshots hochladen (Multi-Upload fähig)
 # ---------------------------------------------------------
-st.header("1. Neuer Flyer hochladen")
-uploaded_file = st.file_uploader(
-    "Bild auswählen (PNG, JPG)", 
+st.header("1. Flyer oder Screenshots hinzufügen")
+st.info("💡 **Tipp fürs Handy:** Du kannst in deiner Galerie (unter 'Screenshots') auch **mehrere Screenshots** gleichzeitig markieren und hochladen!")
+
+uploaded_files = st.file_uploader(
+    "Bilder/Screenshots auswählen (PNG, JPG)", 
     type=["png", "jpg", "jpeg"],
+    accept_multiple_files=True,
     key=f"uploader_{st.session_state.uploader_key}"
 )
 
-if uploaded_file and api_key and not st.session_state.pending_event:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Vorschau Upload", width=200)
-
-    if st.button("🔍 1. Flyer analysieren"):
-        with st.spinner("Analysiere Bild mit Gemini API..."):
+if uploaded_files and api_key and not st.session_state.pending_event:
+    if st.button(f"🔍 {len(uploaded_files)} Bild(er) analysieren"):
+        with st.spinner("Analysiere Bilder mit Gemini API..."):
             try:
+                # Wir nehmen fürs Erste das erste Bild (oder bauen eine Warteschlange)
+                image = Image.open(uploaded_files[0])
                 extracted_data = analyze_flyer(image, api_key)
                 extracted_data["image_base64"] = image_to_base64(image)
                 st.session_state.pending_event = extracted_data
                 st.success("Analyse erfolgreich! Überprüfe die Daten unten.")
                 st.rerun()
-            except APIError as e:
-                err_msg = str(e)
-                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    st.warning("⚠️ KI-Limit erreicht. Bitte 15–30 Sek. warten.")
-                elif "503" in err_msg or "UNAVAILABLE" in err_msg:
-                    st.warning("⚠️ KI ausgelastet. Bitte 10–20 Sek. warten.")
-                else:
-                    st.error(f"API-Fehler: {e}")
             except Exception as e:
                 st.error(f"Fehler bei der Analyse: {e}")
 
@@ -294,7 +285,7 @@ if st.session_state.pending_event:
         if "image_base64" in pending:
             st.image(
                 base64.b64decode(pending["image_base64"]),
-                caption="Analysierter Flyer",
+                caption="Analysierter Screenshot/Flyer",
                 width=220,
             )
 
@@ -439,7 +430,6 @@ def render_event_list(event_list, is_past=False):
             )
             st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
             
-            # Kleinere & einklappbare Beschreibung, um Scroll-Aufwand auf Smartphones zu minimieren
             desc = event.get("description", "")
             if desc:
                 with st.expander("📝 Beschreibung anzeigen", expanded=False):
