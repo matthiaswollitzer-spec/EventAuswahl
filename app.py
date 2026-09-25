@@ -281,7 +281,7 @@ for ev in events:
         future_events.append(ev)
 
 # ---------------------------------------------------------
-# Tabs definieren (Flyer hinzufügen ist jetzt Tab 1)
+# Tabs definieren
 # ---------------------------------------------------------
 tab_upload, tab_current, tab_future, tab_past = st.tabs([
     "➕ Flyer hinzufügen",
@@ -400,7 +400,7 @@ def render_event_list(event_list, is_past=False):
         voters_list = event.get("voters", [])
 
         # =========================================================
-        # ECHTES CSS-FLEXBOX FÜR ZEILE 1 (Verhindert das Umbrechen)
+        # ZEILE 1: Flexbox für Bild (links) & Teilnehmer (rechts)
         # =========================================================
         img_b64 = event.get("image_base64", "")
         img_html = f'<img src="data:image/jpeg;base64,{img_b64}" style="width: 100px; border-radius: 6px;" />' if img_b64 else ""
@@ -411,7 +411,6 @@ def render_event_list(event_list, is_past=False):
         else:
             names_html = "<span style='color: #888;'>👥 Noch keine Zusage</span>"
 
-        # HTML-Container mit Flexbox, der auch bei kleinem Fenster nicht umbricht
         components.html(f"""
             <div style="display: flex; gap: 12px; align-items: flex-start; font-family: sans-serif; font-size: 14px; margin-bottom: 8px;">
                 <div style="flex-shrink: 0;">{img_html}</div>
@@ -419,7 +418,9 @@ def render_event_list(event_list, is_past=False):
             </div>
         """, height=110)
 
-        # ZEILE 2: Der Abstimmungs-Knopf (über die volle Breite)
+        # =========================================================
+        # ZEILE 2: Der Abstimmungs-Knopf (volle Breite)
+        # =========================================================
         if is_past:
             st.info(f"🏆 {len(voters_list)} Stimmen")
         else:
@@ -439,7 +440,9 @@ def render_event_list(event_list, is_past=False):
                 save_data(data)
                 st.rerun()
 
-        # ZEILE 3: Überschrift & Beschreibung / Ausklapper (über die volle Breite)
+        # =========================================================
+        # ZEILE 3: Beschreibung / Ausklapper (volle Breite)
+        # =========================================================
         event_title = event.get("title", "Unbekanntes Event")
         with st.expander(f"📌 {event_title}"):
             st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
@@ -450,13 +453,15 @@ def render_event_list(event_list, is_past=False):
             if desc:
                 st.markdown(f"<small>{desc}</small>", unsafe_allow_html=True)
 
-            if is_admin:
-                st.markdown("---")
-                st.caption("🛠️ **Admin-Aktionen:**")
+        # =========================================================
+        # ADMIN-BEREICH (Sauber getrennt unter dem Event)
+        # =========================================================
+        if is_admin:
+            with st.expander(f"🛠️ Admin-Optionen für '{event_title}'"):
                 adm_col1, adm_col2 = st.columns([1, 1])
 
                 with adm_col1:
-                    if st.button("🗑️ Event löschen", key=f"del_{event_id}"):
+                    if st.button("🗑️ Event löschen", key=f"del_{event_id}", type="primary"):
                         data["events"] = [e for e in data["events"] if e.get("id") != event_id]
                         save_data(data)
                         st.success("Event gelöscht!")
