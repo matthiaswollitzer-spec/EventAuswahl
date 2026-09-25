@@ -334,7 +334,7 @@ if st.session_state.pending_event:
 st.divider()
 
 # ---------------------------------------------------------
-# Bereich 2: Event-Übersicht (Kompakt & Einklappbare Details)
+# Bereich 2: Event-Übersicht (Tabellarisches Layout)
 # ---------------------------------------------------------
 st.header("2. Event-Übersicht & Abstimmung")
 
@@ -388,7 +388,7 @@ def render_event_list(event_list, is_past=False):
     for idx, event in enumerate(sorted_events):
         event_date_iso = event.get("date_iso", "")
 
-        # Kleinere Tagesüberschrift
+        # Tagesüberschrift
         if event_date_iso != last_date:
             formatted_day = format_german_date(event_date_iso)
             st.markdown(f"##### 📅 {formatted_day}")
@@ -397,7 +397,11 @@ def render_event_list(event_list, is_past=False):
         event_id = event.get("id", str(idx))
         voters_list = event.get("voters", [])
 
-        # 1. Oben: Oben links Bild, oben rechts Liste der Teilnehmer
+        # =========================================================
+        # TABELLEN-STRUKTUR (3 Zeilen)
+        # =========================================================
+
+        # ZEILE 1: Spalte 1 (Bild) | Spalte 2 (Teilnehmer)
         col_img, col_names = st.columns([1, 2.5])
 
         with col_img:
@@ -411,7 +415,7 @@ def render_event_list(event_list, is_past=False):
             else:
                 st.markdown("<small style='color: #888;'>👥 Noch keine Zusage</small>", unsafe_allow_html=True)
 
-        # 2. Darunter: Der Abstimmungs-Knopf über die volle Breite
+        # ZEILE 2: Der Abstimmungs-Knopf (über die volle Breite verbunden)
         if is_past:
             st.info(f"🏆 {len(voters_list)} Stimmen")
         else:
@@ -431,7 +435,7 @@ def render_event_list(event_list, is_past=False):
                 save_data(data)
                 st.rerun()
 
-        # 3. Ganz unten: Überschrift mit eingeklappten Daten (Ort, Zeit, Beschreibung)
+        # ZEILE 3: Überschrift & Beschreibung / Ausklapper (über die volle Breite verbunden)
         event_title = event.get("title", "Unbekanntes Event")
         with st.expander(f"📌 {event_title}"):
             st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
