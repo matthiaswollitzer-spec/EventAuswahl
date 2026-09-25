@@ -5,6 +5,7 @@ import json
 import os
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -246,8 +247,8 @@ def analyze_flyer(image, key, max_retries=3):
         except Exception as e:
             raise e
 
-if "pending_event" not in st.session_state:
-    st.session_state.pending_event = None
+if "pending_events" not in st.session_state:
+    st.session_state.pending_events = []
 
 # ---------------------------------------------------------
 # Bereich 1: Flyer / Screenshots hochladen (Multi-Upload fähig)
@@ -262,75 +263,89 @@ uploaded_files = st.file_uploader(
     key=f"uploader_{st.session_state.uploader_key}"
 )
 
-if uploaded_files and api_key and not st.session_state.pending_event:
+if uploaded_files and api_key and not st.session_state.pending_events:
     if st.button(f"🔍 {len(uploaded_files)} Bild(er) analysieren"):
         with st.spinner("Analysiere Bilder mit Gemini API..."):
             try:
-                # Wir nehmen fürs Erste das erste Bild (oder bauen eine Warteschlange)
-                image = Image.open(uploaded_files[0])
-                extracted_data = analyze_flyer(image, api_key)
-                extracted_data["image_base64"] = image_to_base64(image)
-                st.session_state.pending_event = extracted_data
-                st.success("Analyse erfolgreich! Überprüfe die Daten unten.")
+                analyzed_list = []
+                for upl_file in uploaded_files:
+                    image = Image.open(upl_file)
+                    extracted_data = analyze_flyer(image, api_key)
+                    extracted_data["image_base64"] = image_to_base64(image)
+                    analyzed_list.append(extracted_data)
+                
+                st.session_state.pending_events = analyzed_list
+                st.success(f"{len(analyzed_list)} Bild(er) erfolgreich analysiert! Prüfe die Daten unten.")
                 st.rerun()
             except Exception as e:
                 st.error(f"Fehler bei der Analyse: {e}")
 
-if st.session_state.pending_event:
-    st.subheader("📋 Daten überprüfen & anpassen")
-    pending = st.session_state.pending_event
+if st.session_state.pending_events:
+    st.subheader(f"📋 Daten überprüfen & veröffentlichen ({len(st.session_state.pending_events)} ausstehend)")
 
-    col_form_img, col_form_inputs = st.columns([1, 2])
-    with col_form_img:
-        if "image_base64" in pending:
-            st.image(
-                base64.b64decode(pending["image_base64"]),
-                caption="Analysierter Screenshot/Flyer",
-                width=220,
-            )
+    # Wir gehen die Liste der analysierten Events durch
+    for i, pending in enumerate(list(st.session_state.pending_events)):
+        with st.expander(f"Event {i+1}: {pending.get('title', 'Neues Event')} ({pending.get('date_display', '')})", expanded=(i==0)):
+            col_form_img, col_form_inputs = st.columns([1, 2])
+            with col_form_img:
+                if "image_base64" in pending:
+                    st.image(
+                        base64.b64decode(pending["image_base64"]),
+                        caption="Analysierter Screenshot/Flyer",
+                        width=200,
+                    )
 
-    with col_form_inputs:
-        edited_title = st.text_input("Titel des Events", value=pending.get("title", ""))
-        col_d1, col_d2, col_t = st.columns([1, 1, 1])
-        with col_d1:
-            edited_date_display = st.text_input("Datum (Anzeige)", value=pending.get("date_display", ""))
-        with col_d2:
-            edited_date_iso = st.text_input(
-                "Datum (YYYY-MM-DD)",
-                value=pending.get("date_iso", datetime.now().strftime("%Y-%m-%d")),
-            )
-        with col_t:
-            edited_time = st.text_input("Uhrzeit", value=pending.get("time", ""))
+            with col_form_inputs:
+                edited_title = st.text_input("Titel des Events", value=pending.get("title", ""), key=f"title_{i}")
+                col_d1, col_d2, col_t = st.columns([1, 1, 1])
+                with col_d1:
+                    edited_date_display = st.text_input("Datum (Anzeige)", value=pending.get("date_display", ""), key=f"dd_{i}")
+                with col_d2:
+                    edited_date_iso = st.text_input(
+                        "Datum (YYYY-MM-DD)",
+                        value=pending.get("date_iso", datetime.now().strftime("%Y-%m-%d")),
+                        key=f"di_{i}"
+                    )
+                with col_t:
+                    edited_time = st.text_input("Uhrzeit", value=pending.get("time", ""), key=f"time_{i}")
 
-        edited_location = st.text_input("Ort / Location", value=pending.get("location", ""))
-        edited_description = st.text_area("Beschreibung", value=pending.get("description", ""))
+                edited_location = st.text_input("Ort / Location", value=pending.get("location", ""), key=f"loc_{i}")
+                edited_description = st.text_area("Beschreibung", value=pending.get("description", ""), key=f"desc_{i}")
 
-        btn1, btn2 = st.columns([1, 1])
-        with btn1:
-            if st.button("🚀 2. Event veröffentlichen", type="primary"):
-                final_event = {
-                    "id": str(int(time.time())),
-                    "title": edited_title,
-                    "date_display": edited_date_display,
-                    "date_iso": edited_date_iso,
-                    "time": edited_time,
-                    "location": edited_location,
-                    "description": edited_description,
-                    "votes": 0,
-                    "voters": [],
-                    "image_base64": pending.get("image_base64", ""),
-                }
-                data["events"].append(final_event)
-                save_data(data)
-                st.session_state.pending_event = None
-                st.session_state.uploader_key += 1  # Uploader zurücksetzen
-                st.success(f"Event '{edited_title}' veröffentlicht!")
-                st.rerun()
-        with btn2:
-            if st.button("❌ Abbrechen"):
-                st.session_state.pending_event = None
-                st.session_state.uploader_key += 1  # Uploader zurücksetzen
-                st.rerun()
+                b_col1, b_col2 = st.columns([1, 1])
+                with b_col1:
+                    if st.button("🚀 Dieses Event veröffentlichen", key=f"pub_{i}", type="primary"):
+                        final_event = {
+                            "id": str(int(time.time())) + f"_{i}",
+                            "title": edited_title,
+                            "date_display": edited_date_display,
+                            "date_iso": edited_date_iso,
+                            "time": edited_time,
+                            "location": edited_location,
+                            "description": edited_description,
+                            "votes": 0,
+                            "voters": [],
+                            "image_base64": pending.get("image_base64", ""),
+                        }
+                        data["events"].append(final_event)
+                        save_data(data)
+                        # Aus der Pending-Liste entfernen
+                        st.session_state.pending_events.pop(i)
+                        if not st.session_state.pending_events:
+                            st.session_state.uploader_key += 1
+                        st.success(f"Event '{edited_title}' veröffentlicht!")
+                        st.rerun()
+                with b_col2:
+                    if st.button("❌ Verwerfen", key=f"drop_{i}"):
+                        st.session_state.pending_events.pop(i)
+                        if not st.session_state.pending_events:
+                            st.session_state.uploader_key += 1
+                        st.rerun()
+
+    if st.button("🗑️ Alle ausstehenden verwerfen"):
+        st.session_state.pending_events = []
+        st.session_state.uploader_key += 1
+        st.rerun()
 
 st.divider()
 
