@@ -101,70 +101,22 @@ if not st.session_state.logged_in_user and "DEV_USER_NAME" in st.secrets:
         save_data(data)
     st.session_state.logged_in_user = dev_name
 
-# Wenn nicht eingeloggt: Einziger, sauberer Login-Bildschirm
+# Wenn nicht eingeloggt: Login-Bereich anzeigen
 if not st.session_state.logged_in_user:
     st.title("🎉 Event Planner - Login")
     st.warning("👋 Bitte melde dich an oder registriere dich.")
-    st.info("💡 **Tipp:** Falls die Autovervollständigung in WhatsApp streikt, öffne den Link über die drei Punkte im **echten Browser** (Chrome / Safari).")
+    st.info("💡 **Tipp fürs Handy:** Falls der Passwort-Manager in WhatsApp nicht greift, öffne den Link über die drei Punkte im **echten Browser** (Chrome / Safari).")
 
-    # Wir nutzen ein einziges HTML-Formular via components.html, das direkt Steuerungs-Buttons enthält,
-    # da der Android Passwort-Manager native HTML-Formulare am sichersten erkennt und ausfüllt.
-    login_html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <style>
-        body { font-family: sans-serif; background-color: transparent; color: #31333F; padding: 0; margin: 0; }
-        .form-group { margin-bottom: 15px; }
-        label { font-size: 14px; font-weight: 600; display: block; margin-bottom: 5px; }
-        input { width: 100%; padding: 10px; font-size: 16px; border: 1px solid #cccccc; border-radius: 4px; box-sizing: border-box; }
-        .btn-container { display: flex; gap: 10px; margin-top: 20px; }
-        button { flex: 1; padding: 12px; font-size: 15px; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; }
-        .btn-login { background-color: #FF4B4B; color: white; }
-        .btn-register { background-color: #f0f2f6; color: #31333F; border: 1px solid #d6d6d6; }
-    </style>
-    </head>
-    <body>
+    # Unsichtbares HTML-Formular im Hintergrund, damit der Passwort-Manager (Google/Apple) 
+    # die Zugangsdaten erkennt und für die Streamlit-Felder bereitstellt.
+    components.html("""
+        <form style="opacity: 0; height: 0px; overflow: hidden;">
+            <input type="text" name="username" autocomplete="username">
+            <input type="password" name="password" autocomplete="current-password">
+        </form>
+    """, height=0)
 
-    <form method="POST" action="">
-        <div class="form-group">
-            <label>Name:</label>
-            <input type="text" name="username" autocomplete="username" placeholder="Dein Name" required>
-        </div>
-        <div class="form-group">
-            <label>Passwort:</label>
-            <input type="password" name="password" autocomplete="current-password" placeholder="Passwort" required>
-        </div>
-        <div class="btn-container">
-            <button type="submit" name="action" value="login" class="btn-login">Anmelden</button>
-            <button type="submit" name="action" value="register" class="btn-register">Registrieren</button>
-        </div>
-    </form>
-
-    </body>
-    </html>
-    """
-    
-    # JavaScript/Python Brücke für das HTML-Formular in Streamlit
-    # Da components.html standardmäßig keine POST-Daten direkt an Streamlit übergibt, 
-    # fangen wir die Werte über Query-Parameter ab oder nutzen einen alternativen Streamlit-Eingabebereich,
-    # wenn JavaScript ausgeführt wird. Alternativ nutzen wir einen sauberen Trick:
-    
-    # Stabilerer Ansatz für Streamlit: Wir nutzen die normalen Streamlit-Eingabefelder, 
-    # aber betten sie in einen Kontext ein, der den Browser triggert. 
-    # Da obiges HTML einen echten Submit macht (der auf Streamlit-Cloud fehlschlagen kann), 
-    # machen wir es simpler und robuster mit dem nativen Streamlit-Formular, 
-    # aber ohne doppelte Felder:
-    
-    st.stop() # Wir ersetzen den Block unten durch eine saubere Lösung.
-
-# Korrigierter, einzelner Login-Bereich:
-if not st.session_state.logged_in_user:
-    st.title("🎉 Event Planner - Login")
-    st.warning("👋 Bitte melde dich an oder registriere dich.")
-    st.info("💡 **Tipp fürs Handy:** Falls der Passwort-Manager in WhatsApp nicht greift, öffne den Link oben rechts über die drei Punkte im **echten Browser** (Chrome).")
-
-    with st.form("clean_login_form"):
+    with st.form("login_form"):
         input_name = st.text_input("Name (Benutzer)", placeholder="z. B. Matthias")
         input_pass = st.text_input("Passwort", type="password", placeholder="Dein Passwort")
         
