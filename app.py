@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# Custom CSS: Reiter farblich hervorheben & abrunden
+# Custom CSS: Saubere Karten-Optik & Tab-Styling
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -36,11 +36,20 @@ st.markdown("""
         border: 1px solid #e0e0e0;
         border-bottom: none;
     }
-    /* Aktiver Tab farblich hervorheben */
     .stTabs [aria-selected="true"] {
         background-color: #ff4b4b !important;
         color: white !important;
         border-color: #ff4b4b !important;
+    }
+
+    /* Einheitliche Popover- & Button-Höhe in Event-Karten */
+    div[data-testid="column"] div[data-testid="stPopover"] > button,
+    div[data-testid="column"] .stButton > button {
+        width: 100% !important;
+        height: 42px !important;
+        font-size: 0.85rem !important;
+        font-weight: 600 !important;
+        border-radius: 8px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -163,7 +172,6 @@ if not users_list:
     st.warning("⚠️ Keine Teilnehmer definiert. Bitte im Admin-Bereich anlegen.")
     st.stop()
 
-# Visuell hervorgehobenes Namensfeld
 with st.container(border=True):
     st.markdown("### 👤 Wer bist du?")
     selected_user = st.selectbox(
@@ -227,7 +235,7 @@ tab_current, tab_future, tab_upload, tab_past = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# Hilfsfunktion zum Rendern der Listen
+# Hilfsfunktion zum Rendern der Listen (Kompaktes Layout)
 # ---------------------------------------------------------
 def render_event_list(event_list, is_past=False):
     if not event_list:
@@ -245,86 +253,102 @@ def render_event_list(event_list, is_past=False):
 
         event_id = event.get("id", str(idx))
         voters_list = sorted(event.get("voters", []), key=str.lower)
+        has_voted = selected_user in voters_list if selected_user else False
 
-        # Event-Karte mit Rahmen für bessere Struktur
+        # Kompakte Event-Karte
         with st.container(border=True):
-            # 1. Bild nativ rendern
+            # 1. Flyer-Bild
             img_b64 = event.get("image_base64", "")
             if img_b64:
                 try:
                     img_bytes = base64.b64decode(img_b64)
-                    st.image(img_bytes, width=350) 
+                    st.image(img_bytes, use_container_width=True) 
                 except Exception:
                     pass
 
-            # 2. Zusagen-Dropdown & Vote-Button nebeneinander
-            col_list, col_vote = st.columns([1, 1])
-
-            with col_list:
-                with st.expander(f"👥 {len(voters_list)} Zusage(n)"):
-                    if voters_list:
-                        for voter in voters_list:
-                            st.write(f"• {voter}")
-                    else:
-                        st.write("Noch keine Zusagen.")
-
-            with col_vote:
-                if is_past:
-                    st.info("Event ist vorbei")
-                else:
-                    if selected_user:
-                        has_voted = selected_user in voters_list
-                        if has_voted:
-                            btn_label = "👍 Zugesagt"
-                            btn_type = "primary"
-                        else:
-                            btn_label = "Zusagen"
-                            btn_type = "secondary"
-                    else:
-                        has_voted = False
-                        btn_label = "Zusagen"
-                        btn_type = "secondary"
-
-                    if st.button(btn_label, key=f"vote_{event_id}_{selected_user}", type=btn_type, use_container_width=True):
-                        if not selected_user:
-                            st.error("⚠️ Bitte oben zuerst deinen Namen wählen!")
-                        else:
-                            if not has_voted:
-                                voters_list.append(selected_user)
-                            else:
-                                voters_list.remove(selected_user)
-                            event["voters"] = voters_list
-                            event["votes"] = len(voters_list)
-                            save_data(data)
-                            st.rerun()
-
-            # 3. Event-Details
+            # 2. Direkt sichtbare Kerninformationen (Kein Expander nötig!)
             event_title = event.get("title", "Unbekanntes Event")
-            with st.expander(f"📌 {event_title} - Details"):
-                st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
-                st.write(f"⏰ **Uhrzeit:** {event.get('time', 'N/A')}")
-                st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
-                if event.get("description"):
-                    st.write(event.get("description"))
+            time_str = event.get("time", "")
+            loc_str = event.get("location", "")
+            
+            st.markdown(f"### {event_title}")
+            meta_info = []
+            if time_str: meta_info.append(f"⏰ {time_str}")
+            if loc_str: meta_info.append(f"📍 {loc_str}")
+            if meta_info:
+                st.caption(" • ".join(meta_info))
 
-            # 4. Admin-Bereich
-            if is_admin:
-                with st.expander(f"🛠️ Admin-Optionen"):
-                    c1, c2 = st.columns([1, 1])
-                    with c1:
-                        if st.button("🗑️ Löschen", key=f"del_{event_id}", type="primary"):
-                            data["events"] = [e for e in data["events"] if e.get("id") != event_id]
-                            save_data(data)
-                            st.rerun()
-                    with c2:
-                        with st.popover("✏️ Bearbeiten"):
-                            event["title"] = st.text_input("Titel", value=event.get("title"), key=f"ed_t_{event_id}")
-                            event["date_display"] = st.text_input("Anzeige", value=event.get("date_display"), key=f"ed_d_{event_id}")
-                            event["date_iso"] = st.text_input("ISO (YYYY-MM-DD)", value=event.get("date_iso"), key=f"ed_iso_{event_id}")
-                            event["location"] = st.text_input("Ort", value=event.get("location"), key=f"ed_l_{event_id}")
-                            if st.button("Speichern", key=f"save_ed_{event_id}"):
+            st.write("")
+
+            # 3. Aktionsleiste: Popover für Zusagen & Popover für Details (2-Spalten-Layout)
+            col_rsvp, col_info = st.columns([1, 1])
+
+            # SPALTE 1: ZUSAGEN-POPOVER
+            with col_rsvp:
+                if is_past:
+                    st.button("🔒 Vorbei", disabled=True, use_container_width=True, key=f"dis_{event_id}")
+                else:
+                    # Dynamisches Label: Zeigt die Anzahl und ob DU zugesagt hast
+                    status_text = f"👥 {len(voters_list)} Zusage(n)"
+                    if has_voted:
+                        status_text += " • 👍"
+
+                    with st.popover(status_text, use_container_width=True):
+                        st.markdown(f"#### 👥 Zusagen ({len(voters_list)})")
+                        if voters_list:
+                            for voter in voters_list:
+                                st.write(f"• {voter}")
+                        else:
+                            st.info("Noch keine Zusagen.")
+
+                        st.divider()
+
+                        if not selected_user:
+                            st.warning("Bitte wähle oben zuerst deinen Namen aus.")
+                        else:
+                            vote_btn_text = "❌ Zusage zurückziehen" if has_voted else "👍 Ich bin dabei!"
+                            vote_btn_type = "secondary" if has_voted else "primary"
+                            
+                            if st.button(vote_btn_text, type=vote_btn_type, key=f"pop_vote_{event_id}_{selected_user}", use_container_width=True):
+                                if has_voted:
+                                    voters_list.remove(selected_user)
+                                else:
+                                    voters_list.append(selected_user)
+                                event["voters"] = voters_list
+                                event["votes"] = len(voters_list)
                                 save_data(data)
                                 st.rerun()
+
+            # SPALTE 2: DETAILS-POPOVER
+            with col_info:
+                with st.popover("ℹ️ Details", use_container_width=True):
+                    st.markdown(f"#### 📌 {event_title}")
+                    st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
+                    st.write(f"⏰ **Uhrzeit:** {time_str if time_str else 'N/A'}")
+                    st.write(f"📍 **Ort:** {loc_str if loc_str else 'N/A'}")
+                    if event.get("description"):
+                        st.divider()
+                        st.write(event.get("description"))
+
+            # 4. Admin-Bereich (Nur sichtbar für Admins)
+            if is_admin:
+                st.write("")
+                with st.popover("🛠️ Admin-Optionen", use_container_width=True):
+                    st.markdown("##### Event verwalten")
+                    if st.button("🗑️ Event Löschen", key=f"del_{event_id}", type="primary", use_container_width=True):
+                        data["events"] = [e for e in data["events"] if e.get("id") != event_id]
+                        save_data(data)
+                        st.rerun()
+                    
+                    st.divider()
+                    st.markdown("##### Daten bearbeiten")
+                    event["title"] = st.text_input("Titel", value=event.get("title"), key=f"ed_t_{event_id}")
+                    event["date_display"] = st.text_input("Anzeige", value=event.get("date_display"), key=f"ed_d_{event_id}")
+                    event["date_iso"] = st.text_input("ISO (YYYY-MM-DD)", value=event.get("date_iso"), key=f"ed_iso_{event_id}")
+                    event["location"] = st.text_input("Ort", value=event.get("location"), key=f"ed_l_{event_id}")
+                    if st.button("Speichern", key=f"save_ed_{event_id}", use_container_width=True):
+                        save_data(data)
+                        st.rerun()
 
 # ---------------------------------------------------------
 # Tab-Inhalte zuweisen
