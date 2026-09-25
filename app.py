@@ -395,86 +395,82 @@ def render_event_list(event_list, is_past=False):
             last_date = event_date_iso
 
         event_id = event.get("id", str(idx))
-        
-        # Kompaktes Layout: [Bild] | [Abstimmungs-Button] | [Überschrift, Wer-ist-dabei & Ausklapper]
-        col_img, col_btn, col_info = st.columns([1, 1.2, 3.8])
-
         voters_list = event.get("voters", [])
+
+        # 1. Oben: Oben links Bild, oben rechts Liste der Teilnehmer
+        col_img, col_names = st.columns([1, 2.5])
 
         with col_img:
             if event.get("image_base64"):
                 st.image(base64.b64decode(event["image_base64"]), width=110)
 
-        with col_btn:
-            if is_past:
-                st.info(f"🏆 {len(voters_list)} Stimmen")
-            else:
-                has_voted = current_user_name in voters_list
-                button_label = (
-                    "❌ Abwählen"
-                    if has_voted
-                    else f"👍 Dafür ({len(voters_list)})"
-                )
-
-                if st.button(button_label, key=f"vote_{event_id}", use_container_width=True):
-                    if not has_voted:
-                        voters_list.append(current_user_name)
-                    else:
-                        voters_list.remove(current_user_name)
-                    event["votes"] = len(voters_list)
-                    save_data(data)
-                    st.rerun()
-
-        with col_info:
-            event_title = event.get("title", "Unbekanntes Event")
-            st.markdown(f"**{event_title}**")
-
-            # Direkt unter der Überschrift (rechts neben dem Bild/Button-Bereich) anzeigen, wer zugesagt hat
+        with col_names:
             if voters_list:
                 names_str = ", ".join(voters_list)
-                st.markdown(f"<small style='color: #444;'>👥 Dabei: <b>{names_str}</b></small>", unsafe_allow_html=True)
+                st.markdown(f"<small style='color: #333;'>👥 <b>Dabei:</b> {names_str}</small>", unsafe_allow_html=True)
             else:
                 st.markdown("<small style='color: #888;'>👥 Noch keine Zusage</small>", unsafe_allow_html=True)
 
-            # Alles Weitere (Datum, Uhrzeit, Ort, Beschreibung) in EINEM einzigen Ausklapper
-            with st.expander("📍 Details, Zeit & Beschreibung anzeigen"):
-                st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
-                st.write(f"⏰ **Uhrzeit:** {event.get('time', 'N/A')}")
-                st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
-                
-                desc = event.get("description", "")
-                if desc:
-                    st.markdown(f"<small>{desc}</small>", unsafe_allow_html=True)
+        # 2. Darunter: Der Abstimmungs-Knopf über die volle Breite
+        if is_past:
+            st.info(f"🏆 {len(voters_list)} Stimmen")
+        else:
+            has_voted = current_user_name in voters_list
+            button_label = (
+                "❌ Abwählen"
+                if has_voted
+                else f"👍 Dafür ({len(voters_list)})"
+            )
 
-                if is_admin:
-                    st.markdown("---")
-                    st.caption("🛠️ **Admin-Aktionen:**")
-                    adm_col1, adm_col2 = st.columns([1, 1])
+            if st.button(button_label, key=f"vote_{event_id}", use_container_width=True):
+                if not has_voted:
+                    voters_list.append(current_user_name)
+                else:
+                    voters_list.remove(current_user_name)
+                event["votes"] = len(voters_list)
+                save_data(data)
+                st.rerun()
 
-                    with adm_col1:
-                        if st.button("🗑️ Event löschen", key=f"del_{event_id}"):
-                            data["events"] = [e for e in data["events"] if e.get("id") != event_id]
+        # 3. Ganz unten: Überschrift mit eingeklappten Daten (Ort, Zeit, Beschreibung)
+        event_title = event.get("title", "Unbekanntes Event")
+        with st.expander(f"📌 {event_title}"):
+            st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
+            st.write(f"⏰ **Uhrzeit:** {event.get('time', 'N/A')}")
+            st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
+            
+            desc = event.get("description", "")
+            if desc:
+                st.markdown(f"<small>{desc}</small>", unsafe_allow_html=True)
+
+            if is_admin:
+                st.markdown("---")
+                st.caption("🛠️ **Admin-Aktionen:**")
+                adm_col1, adm_col2 = st.columns([1, 1])
+
+                with adm_col1:
+                    if st.button("🗑️ Event löschen", key=f"del_{event_id}"):
+                        data["events"] = [e for e in data["events"] if e.get("id") != event_id]
+                        save_data(data)
+                        st.success("Event gelöscht!")
+                        st.rerun()
+
+                with adm_col2:
+                    with st.popover("✏️ Event anpassen"):
+                        new_title = st.text_input("Titel", value=event.get("title"), key=f"ed_t_{event_id}")
+                        new_date_disp = st.text_input("Datum (Anzeige)", value=event.get("date_display"), key=f"ed_d_{event_id}")
+                        new_date_iso = st.text_input("Datum (YYYY-MM-DD)", value=event.get("date_iso"), key=f"ed_iso_{event_id}")
+                        new_loc = st.text_input("Ort", value=event.get("location"), key=f"ed_l_{event_id}")
+
+                        if st.button("Änderungen speichern", key=f"save_ed_{event_id}"):
+                            event["title"] = new_title
+                            event["date_display"] = new_date_disp
+                            event["date_iso"] = new_date_iso
+                            event["location"] = new_loc
                             save_data(data)
-                            st.success("Event gelöscht!")
+                            st.success("Gespeichert!")
                             st.rerun()
 
-                    with adm_col2:
-                        with st.popover("✏️ Event anpassen"):
-                            new_title = st.text_input("Titel", value=event.get("title"), key=f"ed_t_{event_id}")
-                            new_date_disp = st.text_input("Datum (Anzeige)", value=event.get("date_display"), key=f"ed_d_{event_id}")
-                            new_date_iso = st.text_input("Datum (YYYY-MM-DD)", value=event.get("date_iso"), key=f"ed_iso_{event_id}")
-                            new_loc = st.text_input("Ort", value=event.get("location"), key=f"ed_l_{event_id}")
-
-                            if st.button("Änderungen speichern", key=f"save_ed_{event_id}"):
-                                event["title"] = new_title
-                                event["date_display"] = new_date_disp
-                                event["date_iso"] = new_date_iso
-                                event["location"] = new_loc
-                                save_data(data)
-                                st.success("Gespeichert!")
-                                st.rerun()
-
-        st.markdown("<hr style='margin: 5px 0 15px 0;'>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin: 10px 0 15px 0;'>", unsafe_allow_html=True)
 
 with tab_current:
     render_event_list(current_week_events, is_past=False)
