@@ -204,7 +204,7 @@ if is_admin:
             ]
             removed = before_count - len(data["events"])
             save_data(data)
-            st.sidebar.success(f"{removed} alte(s) Event(s) löscht!")
+            st.sidebar.success(f"{removed} alte(s) Event(s) gelöscht!")
             st.rerun()
 
 elif admin_pin_input:
@@ -306,7 +306,7 @@ if st.session_state.pending_event:
 
         btn1, btn2 = st.columns([1, 1])
         with btn1:
-            if st.button("🚀 2. Event veröffentlichen", type="primary"):
+            if st.button("🚀 Event veröffentlichen", type="primary"):
                 final_event = {
                     "id": str(int(time.time())),
                     "title": edited_title,
@@ -396,8 +396,8 @@ def render_event_list(event_list, is_past=False):
 
         event_id = event.get("id", str(idx))
         
-        # Kompaktes Layout: [Bild] | [Abstimmungs-Button] | [Überschrift & einklappbare Details]
-        col_img, col_btn, col_info = st.columns([1, 1.2, 3.5])
+        # Kompaktes Layout: [Bild] | [Abstimmungs-Button + Namensliste] | [Überschrift & einklappbare Details]
+        col_img, col_btn, col_info = st.columns([1, 1.5, 3.5])
 
         voters_list = event.get("voters", [])
 
@@ -425,6 +425,13 @@ def render_event_list(event_list, is_past=False):
                     save_data(data)
                     st.rerun()
 
+            # Direkt unter dem Button die Namen anzeigen, wer zugesagt hat
+            if voters_list:
+                names_str = ", ".join(voters_list)
+                st.markdown(f"<small style='color: #666;'>👥 {names_str}</small>", unsafe_allow_html=True)
+            else:
+                st.markdown("<small style='color: #aaa;'>👥 Noch keine Zusage</small>", unsafe_allow_html=True)
+
         with col_info:
             event_title = event.get("title", "Unbekanntes Event")
             st.markdown(f"**{event_title}**")
@@ -438,9 +445,6 @@ def render_event_list(event_list, is_past=False):
                 desc = event.get("description", "")
                 if desc:
                     st.markdown(f"<small>{desc}</small>", unsafe_allow_html=True)
-
-                if voters_list:
-                    st.caption(f"Stimmen von: {', '.join(voters_list)}")
 
                 if is_admin:
                     st.markdown("---")
