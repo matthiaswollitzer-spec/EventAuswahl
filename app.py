@@ -6,7 +6,6 @@ import os
 import time
 import uuid
 import streamlit as st
-import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -87,7 +86,7 @@ ADMIN_PIN = st.secrets.get("ADMIN_PIN", "1234")
 data = load_data()
 
 # ---------------------------------------------------------
-# LocalStorage & Entwickler-Modus (Fix für current_user_id)
+# Benutzer-Erkennung über Query-Parameter (Ohne fehlerhaftes Iframe-LocalStorage)
 # ---------------------------------------------------------
 current_user_id = st.query_params.get("user_id", "")
 
@@ -102,25 +101,11 @@ if not current_user_id and "DEV_USER_ID" in st.secrets:
         
     st.query_params["user_id"] = current_user_id
 
-js_storage = f"""
-<script>
-    const currentUrlUserId = "{current_user_id}";
-    if (!currentUrlUserId) {{
-        const savedUserId = localStorage.getItem("event_app_userid");
-        if (savedUserId) {{
-            const url = new URL(window.parent.location.href);
-            url.searchParams.set("user_id", savedUserId);
-            window.parent.location.href = url.href;
-        }}
-    }} else {{
-        localStorage.setItem("event_app_userid", currentUrlUserId);
-    }}
-</script>
-"""
-components.html(js_storage, height=0)
-
 if "edit_name" not in st.session_state:
     st.session_state.edit_name = False
+
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
 
 current_user_name = data["users"].get(current_user_id, "")
 
@@ -255,14 +240,16 @@ if "pending_event" not in st.session_state:
     st.session_state.pending_event = None
 
 # ---------------------------------------------------------
-# Bereich 1: Uploader & Analyse
+# Bereich 1: Uploader & Analyse (Mit Uploader-Reset-Key)
 # ---------------------------------------------------------
 st.header("1. Neuer Flyer hochladen")
 uploaded_file = st.file_uploader(
-    "Bild auswählen (PNG, JPG)", type=["png", "jpg", "jpeg"]
+    "Bild auswählen (PNG, JPG)", 
+    type=["png", "jpg", "jpeg"],
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
-if uploaded_file and api_key:
+if uploaded_file and api_key and not st.session_state.pending_event:
     image = Image.open(uploaded_file)
     st.image(image, caption="Vorschau Upload", width=200)
 
@@ -332,11 +319,13 @@ if st.session_state.pending_event:
                 data["events"].append(final_event)
                 save_data(data)
                 st.session_state.pending_event = None
+                st.session_state.uploader_key += 1  # Uploader komplett zurücksetzen
                 st.success(f"Event '{edited_title}' veröffentlicht!")
                 st.rerun()
         with btn2:
             if st.button("❌ Abbrechen"):
                 st.session_state.pending_event = None
+                st.session_state.uploader_key += 1  # Uploader komplett zurücksetzen
                 st.rerun()
 
 st.divider()
