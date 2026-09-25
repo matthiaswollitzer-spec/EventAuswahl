@@ -334,7 +334,7 @@ if st.session_state.pending_event:
 st.divider()
 
 # ---------------------------------------------------------
-# Bereich 2: Event-Übersicht (Tabellarisches Layout)
+# Bereich 2: Event-Übersicht (Tabellarisches Layout mit CSS-Fix)
 # ---------------------------------------------------------
 st.header("2. Event-Übersicht & Abstimmung")
 
@@ -398,24 +398,26 @@ def render_event_list(event_list, is_past=False):
         voters_list = event.get("voters", [])
 
         # =========================================================
-        # TABELLEN-STRUKTUR (3 Zeilen)
+        # ECHTES CSS-FLEXBOX FÜR ZEILE 1 (Verhindert das Umbrechen)
         # =========================================================
+        img_b64 = event.get("image_base64", "")
+        img_html = f'<img src="data:image/jpeg;base64,{img_b64}" style="width: 100px; border-radius: 6px;" />' if img_b64 else ""
+        
+        if voters_list:
+            names_str = ", ".join(voters_list)
+            names_html = f"<span style='color: #333;'>👥 <b>Dabei:</b> {names_str}</span>"
+        else:
+            names_html = "<span style='color: #888;'>👥 Noch keine Zusage</span>"
 
-        # ZEILE 1: Spalte 1 (Bild) | Spalte 2 (Teilnehmer)
-        col_img, col_names = st.columns([1, 2.5])
+        # HTML-Container mit Flexbox, der auch bei kleinem Fenster nicht umbricht
+        components.html(f"""
+            <div style="display: flex; gap: 12px; align-items: flex-start; font-family: sans-serif; font-size: 14px; margin-bottom: 8px;">
+                <div style="flex-shrink: 0;">{img_html}</div>
+                <div style="flex-grow: 1; word-break: break-word;">{names_html}</div>
+            </div>
+        """, height=110)
 
-        with col_img:
-            if event.get("image_base64"):
-                st.image(base64.b64decode(event["image_base64"]), width=110)
-
-        with col_names:
-            if voters_list:
-                names_str = ", ".join(voters_list)
-                st.markdown(f"<small style='color: #333;'>👥 <b>Dabei:</b> {names_str}</small>", unsafe_allow_html=True)
-            else:
-                st.markdown("<small style='color: #888;'>👥 Noch keine Zusage</small>", unsafe_allow_html=True)
-
-        # ZEILE 2: Der Abstimmungs-Knopf (über die volle Breite verbunden)
+        # ZEILE 2: Der Abstimmungs-Knopf (über die volle Breite)
         if is_past:
             st.info(f"🏆 {len(voters_list)} Stimmen")
         else:
@@ -435,7 +437,7 @@ def render_event_list(event_list, is_past=False):
                 save_data(data)
                 st.rerun()
 
-        # ZEILE 3: Überschrift & Beschreibung / Ausklapper (über die volle Breite verbunden)
+        # ZEILE 3: Überschrift & Beschreibung / Ausklapper (über die volle Breite)
         event_title = event.get("title", "Unbekanntes Event")
         with st.expander(f"📌 {event_title}"):
             st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
