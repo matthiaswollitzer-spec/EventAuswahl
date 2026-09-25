@@ -388,7 +388,7 @@ def render_event_list(event_list, is_past=False):
     for idx, event in enumerate(sorted_events):
         event_date_iso = event.get("date_iso", "")
 
-        # Kleinere, dezentere Tagesüberschrift
+        # Kleinere Tagesüberschrift
         if event_date_iso != last_date:
             formatted_day = format_german_date(event_date_iso)
             st.markdown(f"##### 📅 {formatted_day}")
@@ -396,14 +396,14 @@ def render_event_list(event_list, is_past=False):
 
         event_id = event.get("id", str(idx))
         
-        # Kompaktes Layout: [Bild] | [Abstimmungs-Button + Namensliste] | [Überschrift & einklappbare Details]
-        col_img, col_btn, col_info = st.columns([1, 1.5, 3.5])
+        # Kompaktes Layout: [Bild] | [Abstimmungs-Button] | [Überschrift, Wer-ist-dabei & Ausklapper]
+        col_img, col_btn, col_info = st.columns([1, 1.2, 3.8])
 
         voters_list = event.get("voters", [])
 
         with col_img:
             if event.get("image_base64"):
-                st.image(base64.b64decode(event["image_base64"]), width=120)
+                st.image(base64.b64decode(event["image_base64"]), width=110)
 
         with col_btn:
             if is_past:
@@ -425,16 +425,16 @@ def render_event_list(event_list, is_past=False):
                     save_data(data)
                     st.rerun()
 
-            # Direkt unter dem Button die Namen anzeigen, wer zugesagt hat
-            if voters_list:
-                names_str = ", ".join(voters_list)
-                st.markdown(f"<small style='color: #666;'>👥 {names_str}</small>", unsafe_allow_html=True)
-            else:
-                st.markdown("<small style='color: #aaa;'>👥 Noch keine Zusage</small>", unsafe_allow_html=True)
-
         with col_info:
             event_title = event.get("title", "Unbekanntes Event")
             st.markdown(f"**{event_title}**")
+
+            # Direkt unter der Überschrift (rechts neben dem Bild/Button-Bereich) anzeigen, wer zugesagt hat
+            if voters_list:
+                names_str = ", ".join(voters_list)
+                st.markdown(f"<small style='color: #444;'>👥 Dabei: <b>{names_str}</b></small>", unsafe_allow_html=True)
+            else:
+                st.markdown("<small style='color: #888;'>👥 Noch keine Zusage</small>", unsafe_allow_html=True)
 
             # Alles Weitere (Datum, Uhrzeit, Ort, Beschreibung) in EINEM einzigen Ausklapper
             with st.expander("📍 Details, Zeit & Beschreibung anzeigen"):
