@@ -5,6 +5,7 @@ import json
 import os
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -105,9 +106,20 @@ if not st.session_state.logged_in_user:
     st.title("🎉 Event Planner - Login")
     st.warning("👋 Bitte melde dich an oder registriere dich mit deinem Namen und einem Passwort.")
     
+    # HTML-Formular mit nativen Autocomplete-Tags für Passwort-Manager
+    components.html("""
+        <form method="get" action="" style="font-family: sans-serif; padding: 5px;">
+            <label style="font-size: 13px; color: #555;">Passwort-Manager Hinweis:</label><br>
+            <input type="text" name="username" autocomplete="username" placeholder="Name" style="width:100%; padding:6px; margin:3px 0 10px 0; border:1px solid #ccc; border-radius:4px;"><br>
+            <input type="password" name="password" autocomplete="current-password" placeholder="Passwort" style="width:100%; padding:6px; margin:3px 0 5px 0; border:1px solid #ccc; border-radius:4px;"><br>
+        </form>
+    """, height=130)
+    
+    st.info("💡 **Tipp fürs Handy:** Falls die Autovervollständigung in WhatsApp streikt, öffne den Link über die drei Punkte im **echten Browser** (Chrome / Safari).")
+
     with st.form("login_form"):
-        input_name = st.text_input("Name (z. B. Matthias):")
-        input_pass = st.text_input("Passwort:", type="password")
+        input_name = st.text_input("Name zur Bestätigung:")
+        input_pass = st.text_input("Passwort zur Bestätigung:", type="password")
         
         col_f1, col_f2 = st.columns(2)
         with col_f1:
