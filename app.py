@@ -250,94 +250,7 @@ def analyze_flyer(image, key, max_retries=3):
 if "pending_event" not in st.session_state:
     st.session_state.pending_event = None
 
-# ---------------------------------------------------------
-# Bereich 1: Flyer / Screenshot hochladen (Einzel-Upload)
-# ---------------------------------------------------------
-st.header("1. Flyer oder Screenshot hinzufügen")
-st.info("💡 **Tipp:** Wähle einen Flyer oder einen Screenshot aus deiner Galerie aus.")
-
-uploaded_file = st.file_uploader(
-    "Bild/Screenshot auswählen (PNG, JPG)", 
-    type=["png", "jpg", "jpeg"],
-    key=f"uploader_{st.session_state.uploader_key}"
-)
-
-if uploaded_file and api_key and not st.session_state.pending_event:
-    if st.button("🔍 Bild analysieren"):
-        with st.spinner("Analysiere Bild mit Gemini API..."):
-            try:
-                image = Image.open(uploaded_file)
-                extracted_data = analyze_flyer(image, api_key)
-                extracted_data["image_base64"] = image_to_base64(image)
-                st.session_state.pending_event = extracted_data
-                st.success("Analyse erfolgreich! Überprüfe die Daten unten.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Fehler bei der Analyse: {e}")
-
-if st.session_state.pending_event:
-    st.subheader("📋 Daten überprüfen & anpassen")
-    pending = st.session_state.pending_event
-
-    col_form_img, col_form_inputs = st.columns([1, 2])
-    with col_form_img:
-        if "image_base64" in pending:
-            st.image(
-                base64.b64decode(pending["image_base64"]),
-                caption="Analysierter Screenshot/Flyer",
-                width=220,
-            )
-
-    with col_form_inputs:
-        edited_title = st.text_input("Titel des Events", value=pending.get("title", ""))
-        col_d1, col_d2, col_t = st.columns([1, 1, 1])
-        with col_d1:
-            edited_date_display = st.text_input("Datum (Anzeige)", value=pending.get("date_display", ""))
-        with col_d2:
-            edited_date_iso = st.text_input(
-                "Datum (YYYY-MM-DD)",
-                value=pending.get("date_iso", datetime.now().strftime("%Y-%m-%d")),
-            )
-        with col_t:
-            edited_time = st.text_input("Uhrzeit", value=pending.get("time", ""))
-
-        edited_location = st.text_input("Ort / Location", value=pending.get("location", ""))
-        edited_description = st.text_area("Beschreibung", value=pending.get("description", ""))
-
-        btn1, btn2 = st.columns([1, 1])
-        with btn1:
-            if st.button("🚀 Event veröffentlichen", type="primary"):
-                final_event = {
-                    "id": str(int(time.time())),
-                    "title": edited_title,
-                    "date_display": edited_date_display,
-                    "date_iso": edited_date_iso,
-                    "time": edited_time,
-                    "location": edited_location,
-                    "description": edited_description,
-                    "votes": 0,
-                    "voters": [],
-                    "image_base64": pending.get("image_base64", ""),
-                }
-                data["events"].append(final_event)
-                save_data(data)
-                st.session_state.pending_event = None
-                st.session_state.uploader_key += 1
-                st.success(f"Event '{edited_title}' veröffentlicht!")
-                st.rerun()
-        with btn2:
-            if st.button("❌ Abbrechen"):
-                st.session_state.pending_event = None
-                st.session_state.uploader_key += 1
-                st.rerun()
-
-st.divider()
-
-# ---------------------------------------------------------
-# Bereich 2: Event-Übersicht (Tabellarisches Layout mit CSS-Fix)
-# ---------------------------------------------------------
-st.header("2. Event-Übersicht & Abstimmung")
-
+# Datenberechnung für Kategorien
 events = data.get("events", [])
 today = datetime.now().date()
 end_of_week = today + timedelta(days=7)
@@ -367,12 +280,101 @@ for ev in events:
     else:
         future_events.append(ev)
 
-tab_current, tab_future, tab_past = st.tabs([
+# ---------------------------------------------------------
+# Tabs definieren (Flyer hinzufügen ist jetzt Tab 1)
+# ---------------------------------------------------------
+tab_upload, tab_current, tab_future, tab_past = st.tabs([
+    "➕ Flyer hinzufügen",
     f"🔥 Diese Woche ({len(current_week_events)})",
     f"🔮 Demnächst / Zukunft ({len(future_events)})",
     f"📦 Archiv / Vergangen ({len(past_events)})",
 ])
 
+# =========================================================
+# TAB 1: Flyer / Screenshot hochladen
+# =========================================================
+with tab_upload:
+    st.header("1. Flyer oder Screenshot hinzufügen")
+    st.info("💡 **Tipp:** Wähle einen Flyer oder einen Screenshot aus deiner Galerie aus, um ein Event automatisch per KI zu erstellen.")
+
+    uploaded_file = st.file_uploader(
+        "Bild/Screenshot auswählen (PNG, JPG)", 
+        type=["png", "jpg", "jpeg"],
+        key=f"uploader_{st.session_state.uploader_key}"
+    )
+
+    if uploaded_file and api_key and not st.session_state.pending_event:
+        if st.button("🔍 Bild analysieren"):
+            with st.spinner("Analysiere Bild mit Gemini API..."):
+                try:
+                    image = Image.open(uploaded_file)
+                    extracted_data = analyze_flyer(image, api_key)
+                    extracted_data["image_base64"] = image_to_base64(image)
+                    st.session_state.pending_event = extracted_data
+                    st.success("Analyse erfolgreich! Überprüfe die Daten unten.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fehler bei der Analyse: {e}")
+
+    if st.session_state.pending_event:
+        st.subheader("📋 Daten überprüfen & anpassen")
+        pending = st.session_state.pending_event
+
+        col_form_img, col_form_inputs = st.columns([1, 2])
+        with col_form_img:
+            if "image_base64" in pending:
+                st.image(
+                    base64.b64decode(pending["image_base64"]),
+                    caption="Analysierter Screenshot/Flyer",
+                    width=220,
+                )
+
+        with col_form_inputs:
+            edited_title = st.text_input("Titel des Events", value=pending.get("title", ""))
+            col_d1, col_d2, col_t = st.columns([1, 1, 1])
+            with col_d1:
+                edited_date_display = st.text_input("Datum (Anzeige)", value=pending.get("date_display", ""))
+            with col_d2:
+                edited_date_iso = st.text_input(
+                    "Datum (YYYY-MM-DD)",
+                    value=pending.get("date_iso", datetime.now().strftime("%Y-%m-%d")),
+                )
+            with col_t:
+                edited_time = st.text_input("Uhrzeit", value=pending.get("time", ""))
+
+            edited_location = st.text_input("Ort / Location", value=pending.get("location", ""))
+            edited_description = st.text_area("Beschreibung", value=pending.get("description", ""))
+
+            btn1, btn2 = st.columns([1, 1])
+            with btn1:
+                if st.button("🚀 Event veröffentlichen", type="primary"):
+                    final_event = {
+                        "id": str(int(time.time())),
+                        "title": edited_title,
+                        "date_display": edited_date_display,
+                        "date_iso": edited_date_iso,
+                        "time": edited_time,
+                        "location": edited_location,
+                        "description": edited_description,
+                        "votes": 0,
+                        "voters": [],
+                        "image_base64": pending.get("image_base64", ""),
+                    }
+                    data["events"].append(final_event)
+                    save_data(data)
+                    st.session_state.pending_event = None
+                    st.session_state.uploader_key += 1
+                    st.success(f"Event '{edited_title}' veröffentlicht!")
+                    st.rerun()
+            with btn2:
+                if st.button("❌ Abbrechen"):
+                    st.session_state.pending_event = None
+                    st.session_state.uploader_key += 1
+                    st.rerun()
+
+# ---------------------------------------------------------
+# Hilfsfunktion zum Rendern der Event-Listen
+# ---------------------------------------------------------
 def render_event_list(event_list, is_past=False):
     if not event_list:
         st.info("Keine Events in dieser Kategorie.")
@@ -478,6 +480,9 @@ def render_event_list(event_list, is_past=False):
 
         st.markdown("<hr style='margin: 10px 0 15px 0;'>", unsafe_allow_html=True)
 
+# ---------------------------------------------------------
+# Inhalt für die restlichen Tabs
+# ---------------------------------------------------------
 with tab_current:
     render_event_list(current_week_events, is_past=False)
 
