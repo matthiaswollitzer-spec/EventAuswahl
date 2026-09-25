@@ -1,15 +1,18 @@
 import base64
+from datetime import datetime, timedelta
 import io
 import json
 import os
 import time
+import uuid
+import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 from PIL import Image
-import streamlit as st
 
-# File-Pfad für die zentrale Datenspeicherung
+# Pfad für die zentrale Datenspeicherung
 DATA_FILE = "events.json"
 
 st.set_page_config(
@@ -17,37 +20,62 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# Hilfsfunktionen für zentrale Speicherung
+# Hilfsfunktionen
 # ---------------------------------------------------------
-def load_events():
-    """Lädt alle Events aus der zentralen JSON-Datei."""
+def format_german_date(date_iso_str):
+    """Konvertiert YYYY-MM-DD in 'Wochentag, Tag. Monat Jahr' (z. B. Samstag, 26. September 2026)."""
+    try:
+        dt = datetime.strptime(date_iso_str, "%Y-%m-%d")
+        weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+        months = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"]
+        return f"{weekdays[dt.weekday()]}, {dt.day}. {months[dt.month - 1]} {dt.year}"
+    except Exception:
+        return date_iso_str
+
+def load_data():
+    """Lädt Events und User-Dictionary aus der JSON-Datei."""
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data.get("users"), list):
+                    data["users"] = {u: u for u in data["users"]}
+                if "users" not in data or not isinstance(data["users"], dict):
+                    data["users"] = {}
+                if "events" not in data:
+                    data["events"] = []
+                return data
         except Exception:
-            return []
-    return []
+            return {"users": {}, "events": []}
+    return {"users": {}, "events": []}
 
-def save_events(events):
-    """Speichert die Events-Liste in der zentralen JSON-Datei."""
+def save_data(data):
+    """Speichert Daten in die JSON-Datei."""
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(events, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def delete_user_completely(data, target_uid):
+    """Löscht einen User spurlos: Aus dem Register & aus allen Abstimmungen."""
+    if target_uid in data.get("users", {}):
+        del data["users"][target_uid]
+    
+    for event in data.get("events", []):
+        if target_uid in event.get("voters", []):
+            event["voters"].remove(target_uid)
+            event["votes"] = len(event["voters"])
+            
+    save_data(data)
 
 def image_to_base64(image):
-    """Konvertiert ein PIL-Bild in einen Base64-String (wandelt RGBA vorher in RGB um)."""
     buffered = io.BytesIO()
-    
-    # Transparente Kanäle (PNG/RGBA) in RGB umwandeln für JPEG-Export
     if image.mode in ("RGBA", "P"):
         image = image.convert("RGB")
-        
-    image.thumbnail((400, 400))  # Bild zur Performance-Optimierung verkleinern
+    image.thumbnail((400, 400))
     image.save(buffered, format="JPEG", quality=80)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ---------------------------------------------------------
-# Secrets & Benutzer-Identifikation via URL (st.query_params)
+# Secrets & Authentifizierung
 # ---------------------------------------------------------
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -55,36 +83,138 @@ except Exception:
     api_key = None
     st.error("Fehler: Kein 'GEMINI_API_KEY' in den Streamlit Secrets hinterlegt!")
 
-current_user = st.query_params.get("user", "")
+ADMIN_PIN = st.secrets.get("ADMIN_PIN", "1234")
+data = load_data()
+
+# ---------------------------------------------------------
+# LocalStorage & Entwickler-Modus (Fix für current_user_id)
+# ---------------------------------------------------------
+current_user_id = st.query_params.get("user_id", "")
+
+# Entwickler-Komfort für den lokalen Debugger (automatischer Login als Matthias)
+if not current_user_id and "DEV_USER_ID" in st.secrets:
+    current_user_id = st.secrets["DEV_USER_ID"]
+    dev_name = st.secrets.get("DEV_USER_NAME", "Matthias")
+    
+    if current_user_id not in data.get("users", {}):
+        data["users"][current_user_id] = dev_name
+        save_data(data)
+        
+    st.query_params["user_id"] = current_user_id
+
+js_storage = f"""
+<script>
+    const currentUrlUserId = "{current_user_id}";
+    if (!currentUrlUserId) {{
+        const savedUserId = localStorage.getItem("event_app_userid");
+        if (savedUserId) {{
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set("user_id", savedUserId);
+            window.parent.location.href = url.href;
+        }}
+    }} else {{
+        localStorage.setItem("event_app_userid", currentUrlUserId);
+    }}
+</script>
+"""
+components.html(js_storage, height=0)
 
 if "edit_name" not in st.session_state:
     st.session_state.edit_name = False
 
-# Name abfragen oder ändern
-if not current_user or st.session_state.edit_name:
+current_user_name = data["users"].get(current_user_id, "")
+
+# ---------------------------------------------------------
+# Name-Eingabe (Mit Eindeutigkeits-Prüfung)
+# ---------------------------------------------------------
+if not current_user_id or not current_user_name or st.session_state.edit_name:
     st.title("🎉 Event Planner")
     st.warning("👋 Bitte gib deinen Namen für die Abstimmung ein.")
-    input_name = st.text_input("Dein Name (z. B. Alex):", value=current_user)
-    
+    input_name = st.text_input("Dein Name (z. B. Alex):", value=current_user_name)
+
     if st.button("Name speichern"):
-        if input_name.strip():
-            st.query_params["user"] = input_name.strip()
+        cleaned_name = input_name.strip()
+
+        other_names_lower = [
+            name.lower()
+            for uid, name in data.get("users", {}).items()
+            if uid != current_user_id
+        ]
+
+        if not cleaned_name:
+            st.error("Bitte gib einen gültigen Namen ein.")
+        elif cleaned_name.lower() in other_names_lower:
+            st.error(
+                f"⚠️ Der Name '{cleaned_name}' ist bereits vergeben! "
+                "Bitte wähle einen anderen Namen oder füge ein Kürzel an."
+            )
+        else:
+            if not current_user_id:
+                current_user_id = f"usr_{uuid.uuid4().hex[:8]}"
+
+            data["users"][current_user_id] = cleaned_name
+            save_data(data)
+
+            st.query_params["user_id"] = current_user_id
             st.session_state.edit_name = False
             st.rerun()
-        else:
-            st.error("Bitte gib einen gültigen Namen ein.")
     st.stop()
 
-# Header & Namensanzeige mit Änderungs-Button
-st.title("🎉 Event Planner: Flyer-Analyse & Abstimmung")
+# ---------------------------------------------------------
+# Sidebar / Admin-Modus (User- & Archiv-Verwaltung)
+# ---------------------------------------------------------
+st.sidebar.title("👤 Profil & Admin")
+st.sidebar.write(f"Eingeloggt als: **{current_user_name}**")
 
-col_u1, col_u2 = st.columns([3, 1])
-with col_u1:
-    st.caption(f"Eingeloggt als: **{current_user}**")
-with col_u2:
-    if st.button("✏️ Name ändern", key="btn_change_name"):
-        st.session_state.edit_name = True
-        st.rerun()
+if st.sidebar.button("✏️ Name ändern"):
+    st.session_state.edit_name = True
+    st.rerun()
+
+st.sidebar.divider()
+st.sidebar.subheader("🔒 Superuser / Admin")
+admin_pin_input = st.sidebar.text_input("Admin-PIN eingeben", type="password")
+is_admin = admin_pin_input == ADMIN_PIN
+
+if is_admin:
+    st.sidebar.success("🔑 Admin-Modus aktiv")
+
+    # 1. User-Verwaltung
+    with st.sidebar.expander("👥 User verwalten", expanded=True):
+        users_dict = data.get("users", {})
+        if not users_dict:
+            st.info("Keine User registriert.")
+        else:
+            for uid, uname in list(users_dict.items()):
+                ucol1, ucol2 = st.columns([3, 1])
+                ucol1.write(f"• **{uname}**")
+                if ucol2.button("🗑️", key=f"del_user_{uid}"):
+                    delete_user_completely(data, uid)
+                    st.sidebar.success(f"User '{uname}' & Stimmen gelöscht!")
+                    st.rerun()
+
+    # 2. Massenlöschung alter Events
+    with st.sidebar.expander("🧹 Archiv aufräumen", expanded=False):
+        cutoff_date = st.date_input(
+            "Lösche Events vor Datum:",
+            value=datetime.now().date() - timedelta(days=30),
+        )
+        if st.button("🗑️ Alte Events löschen", type="primary"):
+            cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+            before_count = len(data["events"])
+            
+            data["events"] = [
+                e for e in data["events"]
+                if e.get("date_iso", "9999-99-99") >= cutoff_str
+            ]
+            removed = before_count - len(data["events"])
+            save_data(data)
+            st.sidebar.success(f"{removed} alte(s) Event(s) gelöscht!")
+            st.rerun()
+
+elif admin_pin_input:
+    st.sidebar.error("Falsche PIN")
+
+st.title("🎉 Event Planner")
 
 # ---------------------------------------------------------
 # KI-Analyse mit Gemini 3.8 Flash
@@ -96,7 +226,8 @@ def analyze_flyer(image, key, max_retries=3):
     Extrahiere folgende Informationen im exakten JSON-Format:
     {
         "title": "Name des Events",
-        "date": "Datum oder Wochentag",
+        "date_iso": "Datum im Format YYYY-MM-DD (falls Jahr fehlt, nimm 2026)",
+        "date_display": "Lesbares Datum (z. B. Samstag, 15. Oktober)",
         "time": "Uhrzeit/Beginn",
         "location": "Ort/Club/Adresse",
         "description": "Kurze Zusammenfassung in 1 Satz"
@@ -120,15 +251,13 @@ def analyze_flyer(image, key, max_retries=3):
         except Exception as e:
             raise e
 
-# Session State für Zwischenspeicherung (Schritt 1 -> Schritt 2)
 if "pending_event" not in st.session_state:
     st.session_state.pending_event = None
 
 # ---------------------------------------------------------
-# Bereich 1: Uploader & 2-Stufen Analyse
+# Bereich 1: Uploader & Analyse
 # ---------------------------------------------------------
 st.header("1. Neuer Flyer hochladen")
-
 uploaded_file = st.file_uploader(
     "Bild auswählen (PNG, JPG)", type=["png", "jpg", "jpeg"]
 )
@@ -137,7 +266,6 @@ if uploaded_file and api_key:
     image = Image.open(uploaded_file)
     st.image(image, caption="Vorschau Upload", width=200)
 
-    # Schritt 1: Analyse ausführen
     if st.button("🔍 1. Flyer analysieren"):
         with st.spinner("Analysiere Bild mit Gemini API..."):
             try:
@@ -149,66 +277,64 @@ if uploaded_file and api_key:
             except APIError as e:
                 err_msg = str(e)
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    st.warning(
-                        "⚠️ Das kostenlose Anfragen-Limit der Gemini API ist vorübergehend erreicht. "
-                        "Bitte warte 15–30 Sekunden und klicke dann erneut auf 'Flyer analysieren'."
-                    )
+                    st.warning("⚠️ KI-Limit erreicht. Bitte 15–30 Sek. warten.")
                 elif "503" in err_msg or "UNAVAILABLE" in err_msg:
-                    st.warning(
-                        "⚠️ Die KI ist gerade sehr stark ausgelastet (Fehler 503). "
-                        "Bitte warte etwa 10–20 Sekunden und versuche es erneut."
-                    )
+                    st.warning("⚠️ KI ausgelastet. Bitte 10–20 Sek. warten.")
                 else:
-                    st.error(f"API-Fehler bei der Analyse: {e}")
+                    st.error(f"API-Fehler: {e}")
             except Exception as e:
                 st.error(f"Fehler bei der Analyse: {e}")
 
-# Schritt 2: Korrektur-Formular (falls Analyse vorliegt)
 if st.session_state.pending_event:
-    st.subheader("📋 Daten überprüfen & bei Bedarf anpassen")
+    st.subheader("📋 Daten überprüfen & anpassen")
     pending = st.session_state.pending_event
 
     col_form_img, col_form_inputs = st.columns([1, 2])
-
     with col_form_img:
         if "image_base64" in pending:
-            img_bytes = base64.b64decode(pending["image_base64"])
-            st.image(img_bytes, caption="Analysierter Flyer", width=220)
+            st.image(
+                base64.b64decode(pending["image_base64"]),
+                caption="Analysierter Flyer",
+                width=220,
+            )
 
     with col_form_inputs:
         edited_title = st.text_input("Titel des Events", value=pending.get("title", ""))
-        col_d, col_t = st.columns(2)
-        with col_d:
-            edited_date = st.text_input("Datum", value=pending.get("date", ""))
+        col_d1, col_d2, col_t = st.columns([1, 1, 1])
+        with col_d1:
+            edited_date_display = st.text_input("Datum (Anzeige)", value=pending.get("date_display", ""))
+        with col_d2:
+            edited_date_iso = st.text_input(
+                "Datum (YYYY-MM-DD)",
+                value=pending.get("date_iso", datetime.now().strftime("%Y-%m-%d")),
+            )
         with col_t:
             edited_time = st.text_input("Uhrzeit", value=pending.get("time", ""))
-        
+
         edited_location = st.text_input("Ort / Location", value=pending.get("location", ""))
         edited_description = st.text_area("Beschreibung", value=pending.get("description", ""))
 
-        btn_col1, btn_col2 = st.columns([1, 1])
-        with btn_col1:
+        btn1, btn2 = st.columns([1, 1])
+        with btn1:
             if st.button("🚀 2. Event veröffentlichen", type="primary"):
                 final_event = {
+                    "id": str(int(time.time())),
                     "title": edited_title,
-                    "date": edited_date,
+                    "date_display": edited_date_display,
+                    "date_iso": edited_date_iso,
                     "time": edited_time,
                     "location": edited_location,
                     "description": edited_description,
                     "votes": 0,
                     "voters": [],
-                    "image_base64": pending.get("image_base64", "")
+                    "image_base64": pending.get("image_base64", ""),
                 }
-                
-                events = load_events()
-                events.append(final_event)
-                save_events(events)
-
+                data["events"].append(final_event)
+                save_data(data)
                 st.session_state.pending_event = None
                 st.success(f"Event '{edited_title}' veröffentlicht!")
                 st.rerun()
-
-        with btn_col2:
+        with btn2:
             if st.button("❌ Abbrechen"):
                 st.session_state.pending_event = None
                 st.rerun()
@@ -216,50 +342,141 @@ if st.session_state.pending_event:
 st.divider()
 
 # ---------------------------------------------------------
-# Bereich 2: Event-Übersicht & Abstimmung (Live)
+# Bereich 2: Event-Übersicht (Sortiert, gruppiert & Button unter Bild)
 # ---------------------------------------------------------
-st.header("2. Aktuelle Abstimmung")
+st.header("2. Event-Übersicht & Abstimmung")
 
-events = load_events()
+events = data.get("events", [])
+today = datetime.now().date()
+end_of_week = today + timedelta(days=7)
 
-if not events:
-    st.info("Noch keine Events vorhanden. Lade oben den ersten Flyer hoch!")
-else:
-    for idx, event in enumerate(events):
+current_week_events = []
+future_events = []
+past_events = []
+
+seen_ids = set()
+
+for ev in events:
+    ev_id = ev.get("id")
+    if ev_id in seen_ids:
+        continue
+    seen_ids.add(ev_id)
+
+    raw_date = ev.get("date_iso", "")
+    try:
+        event_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        event_date = datetime(2099, 12, 31).date()
+
+    if event_date < today:
+        past_events.append(ev)
+    elif today <= event_date <= end_of_week:
+        current_week_events.append(ev)
+    else:
+        future_events.append(ev)
+
+tab_current, tab_future, tab_past = st.tabs([
+    f"🔥 Diese Woche ({len(current_week_events)})",
+    f"🔮 Demnächst / Zukunft ({len(future_events)})",
+    f"📦 Archiv / Vergangen ({len(past_events)})",
+])
+
+def render_event_list(event_list, is_past=False):
+    if not event_list:
+        st.info("Keine Events in dieser Kategorie.")
+        return
+
+    sorted_events = sorted(
+        event_list,
+        key=lambda x: (x.get("date_iso", "9999-99-99"), x.get("time", ""))
+    )
+
+    last_date = None
+
+    for idx, event in enumerate(sorted_events):
+        event_date_iso = event.get("date_iso", "")
+
+        if event_date_iso != last_date:
+            formatted_day = format_german_date(event_date_iso)
+            st.markdown(f"#### 📅 {formatted_day}")
+            st.divider()
+            last_date = event_date_iso
+
+        event_id = event.get("id", str(idx))
         col1, col2 = st.columns([1, 3])
 
+        voters_list = event.get("voters", [])
+
         with col1:
-            if "image_base64" in event and event["image_base64"]:
-                img_bytes = base64.b64decode(event["image_base64"])
-                st.image(img_bytes, width=200)
+            if event.get("image_base64"):
+                st.image(base64.b64decode(event["image_base64"]), width=200)
+
+            if is_past:
+                st.info(f"🏆 **Endergebnis:** {len(voters_list)} Stimmen")
+            else:
+                has_voted = current_user_id in voters_list
+                button_label = (
+                    "❌ Stimme zurückziehen"
+                    if has_voted
+                    else f"👍 Dafür stimmen ({len(voters_list)})"
+                )
+
+                if st.button(button_label, key=f"vote_{event_id}", use_container_width=True):
+                    if not has_voted:
+                        voters_list.append(current_user_id)
+                    else:
+                        voters_list.remove(current_user_id)
+                    event["votes"] = len(voters_list)
+                    save_data(data)
+                    st.rerun()
 
         with col2:
             st.subheader(event.get("title", "Unbekanntes Event"))
             st.write(
-                f"📅 **Datum:** {event.get('date', 'N/A')} | ⏰ **Uhrzeit:** {event.get('time', 'N/A')}"
+                f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))} | ⏰ **Uhrzeit:** {event.get('time', 'N/A')}"
             )
             st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
             st.write(f"📝 {event.get('description', '')}")
 
-            has_voted = current_user in event.get("voters", [])
-            button_label = (
-                "❌ Stimme zurückziehen"
-                if has_voted
-                else f"👍 Dafür stimmen ({event.get('votes', 0)})"
-            )
+            if voters_list:
+                voter_names = [data["users"].get(uid, "Unbekannt") for uid in voters_list]
+                st.caption(f"Stimmen von: {', '.join(voter_names)}")
 
-            if st.button(button_label, key=f"vote_{idx}"):
-                if not has_voted:
-                    event["votes"] += 1
-                    event["voters"].append(current_user)
-                else:
-                    event["votes"] -= 1
-                    event["voters"].remove(current_user)
+            if is_admin:
+                st.markdown("---")
+                st.caption("🛠️ **Admin-Aktionen:**")
+                adm_col1, adm_col2 = st.columns([1, 1])
 
-                save_events(events)
-                st.rerun()
+                with adm_col1:
+                    if st.button("🗑️ Event löschen", key=f"del_{event_id}"):
+                        data["events"] = [e for e in data["events"] if e.get("id") != event_id]
+                        save_data(data)
+                        st.success("Event gelöscht!")
+                        st.rerun()
 
-            if event.get("voters"):
-                st.caption(f"Stimmen von: {', '.join(event['voters'])}")
+                with adm_col2:
+                    with st.popover("✏️ Event anpassen"):
+                        new_title = st.text_input("Titel", value=event.get("title"), key=f"ed_t_{event_id}")
+                        new_date_disp = st.text_input("Datum (Anzeige)", value=event.get("date_display"), key=f"ed_d_{event_id}")
+                        new_date_iso = st.text_input("Datum (YYYY-MM-DD)", value=event.get("date_iso"), key=f"ed_iso_{event_id}")
+                        new_loc = st.text_input("Ort", value=event.get("location"), key=f"ed_l_{event_id}")
 
-        st.divider()
+                        if st.button("Änderungen speichern", key=f"save_ed_{event_id}"):
+                            event["title"] = new_title
+                            event["date_display"] = new_date_disp
+                            event["date_iso"] = new_date_iso
+                            event["location"] = new_loc
+                            save_data(data)
+                            st.success("Gespeichert!")
+                            st.rerun()
+
+        st.write("")
+
+with tab_current:
+    render_event_list(current_week_events, is_past=False)
+
+with tab_future:
+    render_event_list(future_events, is_past=False)
+
+with tab_past:
+    render_event_list(past_events, is_past=True)
