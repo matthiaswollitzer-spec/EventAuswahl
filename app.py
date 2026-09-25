@@ -5,7 +5,6 @@ import json
 import os
 import time
 import streamlit as st
-import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -15,14 +14,41 @@ from PIL import Image
 DATA_FILE = "events.json"
 
 st.set_page_config(
-    page_title="WhatsApp Event Planner", page_icon="🎉", layout="wide"
+    page_title="Event Planner", page_icon="🎉", layout="wide"
 )
+
+# ---------------------------------------------------------
+# Custom CSS: Reiter farblich hervorheben & abrunden
+# ---------------------------------------------------------
+st.markdown("""
+<style>
+    /* Styling für die Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 40px;
+        background-color: #f0f2f6;
+        border-radius: 8px 8px 0px 0px;
+        padding-left: 14px;
+        padding-right: 14px;
+        font-weight: 600;
+        border: 1px solid #e0e0e0;
+        border-bottom: none;
+    }
+    /* Aktiver Tab farblich hervorheben */
+    .stTabs [aria-selected="true"] {
+        background-color: #ff4b4b !important;
+        color: white !important;
+        border-color: #ff4b4b !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------
 def format_german_date(date_iso_str):
-    """Konvertiert YYYY-MM-DD in 'Wochentag, Tag. Monat Jahr' (z. B. Samstag, 26. September 2026)."""
     try:
         dt = datetime.strptime(date_iso_str, "%Y-%m-%d")
         weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
@@ -32,47 +58,48 @@ def format_german_date(date_iso_str):
         return date_iso_str
 
 def load_data():
-    """Lädt Events und User-Dictionary (Name -> Passwort) aus der JSON-Datei."""
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if "users" not in data or not isinstance(data["users"], dict):
-                    data["users"] = {}
+                if "users" not in data or not isinstance(data["users"], list):
+                    if isinstance(data.get("users"), dict):
+                        data["users"] = list(data["users"].keys())
+                    else:
+                        data["users"] = ["Anna", "Julian", "Matthias"]
                 if "events" not in data:
                     data["events"] = []
+                data["users"] = sorted(data["users"], key=str.lower)
                 return data
         except Exception:
-            return {"users": {}, "events": []}
-    return {"users": {}, "events": []}
+            return {"users": ["Anna", "Julian", "Matthias"], "events": []}
+    return {"users": ["Anna", "Julian", "Matthias"], "events": []}
 
 def save_data(data):
-    """Speichert Daten in die JSON-Datei."""
+    if "users" in data and isinstance(data["users"], list):
+        data["users"] = sorted(data["users"], key=str.lower)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
-def delete_user_completely(data, target_username):
-    """Löscht einen User spurlos: Aus dem Register & aus allen Abstimmungen."""
-    if target_username in data.get("users", {}):
-        del data["users"][target_username]
-    
-    for event in data.get("events", []):
-        if target_username in event.get("voters", []):
-            event["voters"].remove(target_username)
-            event["votes"] = len(event["voters"])
-            
-    save_data(data)
 
 def image_to_base64(image):
     buffered = io.BytesIO()
     if image.mode in ("RGBA", "P"):
         image = image.convert("RGB")
-    image.thumbnail((400, 400))
-    image.save(buffered, format="JPEG", quality=80)
+    image.thumbnail((800, 800))
+    image.save(buffered, format="JPEG", quality=85)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ---------------------------------------------------------
-# Secrets & Authentifizierung
+# Session State Initialisierung
+# ---------------------------------------------------------
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
+if "pending_event" not in st.session_state:
+    st.session_state.pending_event = None
+
+# ---------------------------------------------------------
+# Secrets & Daten laden
 # ---------------------------------------------------------
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -84,415 +111,269 @@ ADMIN_PIN = st.secrets.get("ADMIN_PIN", "1234")
 data = load_data()
 
 # ---------------------------------------------------------
-# Session State & Login-Verwaltung (Name & Passwort)
+# Sidebar: Admin-Modus
 # ---------------------------------------------------------
-if "logged_in_user" not in st.session_state:
-    st.session_state.logged_in_user = None
+st.sidebar.title("🛠️ Admin & Konfig")
 
-if "uploader_key" not in st.session_state:
-    st.session_state.uploader_key = 0
-
-# Entwickler-Komfort für den lokalen Debugger (automatischer Login)
-if not st.session_state.logged_in_user and "DEV_USER_NAME" in st.secrets:
-    dev_name = st.secrets.get("DEV_USER_NAME", "Matthias")
-    dev_pass = st.secrets.get("DEV_USER_PASS", "1234")
-    if dev_name not in data["users"]:
-        data["users"][dev_name] = dev_pass
-        save_data(data)
-    st.session_state.logged_in_user = dev_name
-
-# Wenn nicht eingeloggt: Login-Bereich anzeigen
-if not st.session_state.logged_in_user:
-    st.title("🎉 Event Planner - Login")
-    st.warning("👋 Bitte melde dich an oder registriere dich.")
-    st.info("💡 **Tipp fürs Handy:** Falls der Passwort-Manager in WhatsApp nicht greift, öffne den Link über die drei Punkte im **echten Browser** (Chrome / Safari).")
-
-    components.html("""
-        <form style="opacity: 0; height: 0px; overflow: hidden;">
-            <input type="text" name="username" autocomplete="username">
-            <input type="password" name="password" autocomplete="current-password">
-        </form>
-    """, height=0)
-
-    with st.form("login_form"):
-        input_name = st.text_input("Name (Benutzer)", placeholder="z. B. Matthias")
-        input_pass = st.text_input("Passwort", type="password", placeholder="Dein Passwort")
-        
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            submit_login = st.form_submit_button("Anmelden", type="primary", use_container_width=True)
-        with col_f2:
-            submit_register = st.form_submit_button("Neu registrieren", use_container_width=True)
-
-        if submit_login:
-            name_clean = input_name.strip()
-            users_db = data.get("users", {})
-            if not name_clean or not input_pass:
-                st.error("Bitte Name und Passwort eingeben.")
-            elif name_clean in users_db and users_db[name_clean] == input_pass:
-                st.session_state.logged_in_user = name_clean
-                st.success("Erfolgreich angemeldet!")
-                st.rerun()
-            else:
-                st.error("Falscher Name oder falsches Passwort.")
-
-        if submit_register:
-            name_clean = input_name.strip()
-            users_db = data.get("users", {})
-            if not name_clean:
-                st.error("Bitte gib einen Namen ein.")
-            elif not input_pass:
-                st.error("Bitte gib ein Passwort ein.")
-            elif name_clean in users_db:
-                st.error("Dieser Name ist bereits vergeben. Bitte wähle einen anderen.")
-            else:
-                users_db[name_clean] = input_pass
-                data["users"] = users_db
-                save_data(data)
-                st.session_state.logged_in_user = name_clean
-                st.success("Erfolgreich registriert und eingeloggt!")
-                st.rerun()
-    st.stop()
-
-current_user_name = st.session_state.logged_in_user
-
-# ---------------------------------------------------------
-# Sidebar / Admin-Modus (User- & Archiv-Verwaltung)
-# ---------------------------------------------------------
-st.sidebar.title("👤 Profil & Admin")
-st.sidebar.write(f"Eingeloggt als: **{current_user_name}**")
-
-if st.sidebar.button("🚪 Abmelden"):
-    st.session_state.logged_in_user = None
-    st.rerun()
-
-st.sidebar.divider()
-st.sidebar.subheader("🔒 Superuser / Admin")
 admin_pin_input = st.sidebar.text_input("Admin-PIN eingeben", type="password")
 is_admin = admin_pin_input == ADMIN_PIN
 
 if is_admin:
     st.sidebar.success("🔑 Admin-Modus aktiv")
 
-    # 1. User-Verwaltung
-    with st.sidebar.expander("👥 User verwalten", expanded=True):
-        users_dict = data.get("users", {})
-        if not users_dict:
-            st.info("Keine User registriert.")
-        else:
-            for uname in list(users_dict.keys()):
-                ucol1, ucol2 = st.columns([3, 1])
-                ucol1.write(f"• **{uname}**")
-                if ucol2.button("🗑️", key=f"del_user_{uname}"):
-                    delete_user_completely(data, uname)
-                    st.sidebar.success(f"User '{uname}' & Stimmen gelöscht!")
-                    st.rerun()
+    with st.sidebar.expander("👥 Teilnehmer verwalten", expanded=True):
+        new_user_input = st.text_input("Neuer Name")
+        if st.button("➕ Hinzufügen"):
+            clean_name = new_user_input.strip()
+            if clean_name and clean_name not in data["users"]:
+                data["users"].append(clean_name)
+                save_data(data)
+                st.sidebar.success(f"'{clean_name}' hinzugefügt!")
+                st.rerun()
 
-    # 2. Massenlöschung alter Events
+        st.divider()
+        st.write("Bestehende Teilnehmer (alphabetisch):")
+        for uname in list(data["users"]):
+            ucol1, ucol2 = st.columns([3, 1])
+            ucol1.write(f"• {uname}")
+            if ucol2.button("🗑️", key=f"del_user_{uname}"):
+                data["users"].remove(uname)
+                for event in data.get("events", []):
+                    if uname in event.get("voters", []):
+                        event["voters"].remove(uname)
+                        event["votes"] = len(event["voters"])
+                save_data(data)
+                st.rerun()
+
     with st.sidebar.expander("🧹 Archiv aufräumen", expanded=False):
-        cutoff_date = st.date_input(
-            "Lösche Events vor Datum:",
-            value=datetime.now().date() - timedelta(days=30),
-        )
+        cutoff_date = st.date_input("Lösche Events vor Datum:", value=datetime.now().date() - timedelta(days=30))
         if st.button("🗑️ Alte Events löschen", type="primary"):
             cutoff_str = cutoff_date.strftime("%Y-%m-%d")
-            before_count = len(data["events"])
-            
-            data["events"] = [
-                e for e in data["events"]
-                if e.get("date_iso", "9999-99-99") >= cutoff_str
-            ]
-            removed = before_count - len(data["events"])
+            data["events"] = [e for e in data["events"] if e.get("date_iso", "9999-99-99") >= cutoff_str]
             save_data(data)
-            st.sidebar.success(f"{removed} alte(s) Event(s) gelöscht!")
             st.rerun()
 
-elif admin_pin_input:
-    st.sidebar.error("Falsche PIN")
-
+# ---------------------------------------------------------
+# HAUPTSEITE: Wer bist du?
+# ---------------------------------------------------------
 st.title("🎉 Event Planner")
 
+users_list = sorted(data.get("users", []), key=str.lower)
+if not users_list:
+    st.warning("⚠️ Keine Teilnehmer definiert. Bitte im Admin-Bereich anlegen.")
+    st.stop()
+
+# Visuell hervorgehobenes Namensfeld
+with st.container(border=True):
+    st.markdown("### 👤 Wer bist du?")
+    selected_user = st.selectbox(
+        "Dein Name:", 
+        options=users_list, 
+        index=None, 
+        placeholder="-- Bitte wähle zuerst deinen Namen aus --", 
+        label_visibility="collapsed"
+    )
+
+st.write("")
+
 # ---------------------------------------------------------
-# KI-Analyse mit Gemini 3.8 Flash (Flyer & Screenshots)
+# KI-Analyse & Daten-Sortierung
 # ---------------------------------------------------------
 def analyze_flyer(image, key, max_retries=3):
     client = genai.Client(api_key=key)
-    prompt = """
-    Analysiere diesen Flyer oder Screenshot. 
-    Extrahiere folgende Informationen im exakten JSON-Format:
-    {
-        "title": "Name des Events",
-        "date_iso": "Datum im Format YYYY-MM-DD (falls Jahr fehlt, nimm 2026)",
-        "date_display": "Lesbares Datum (z. B. Samstag, 15. Oktober)",
-        "time": "Uhrzeit/Beginn",
-        "location": "Ort/Club/Adresse",
-        "description": "Kurze Zusammenfassung in 1 Satz"
-    }
-    """
+    prompt = """Analysiere diesen Flyer. Extrahiere als JSON:
+    {"title": "Name", "date_iso": "YYYY-MM-DD", "date_display": "z.B. Samstag, 15. Okt", "time": "Uhrzeit", "location": "Ort", "description": "1 Satz Zusammenfassung"}"""
+    
     for attempt in range(1, max_retries + 1):
         try:
             response = client.models.generate_content(
                 model="gemini-3.8-flash",
                 contents=[image, prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                ),
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
             )
             return json.loads(response.text)
         except APIError as e:
-            if attempt < max_retries:
-                time.sleep(attempt * 2)
-            else:
-                raise e
-        except Exception as e:
-            raise e
+            if attempt < max_retries: time.sleep(attempt * 2)
+            else: raise e
 
-if "pending_event" not in st.session_state:
-    st.session_state.pending_event = None
-
-# Datenberechnung für Kategorien
 events = data.get("events", [])
 today = datetime.now().date()
 end_of_week = today + timedelta(days=7)
 
-current_week_events = []
-future_events = []
-past_events = []
-
+current_week_events, future_events, past_events = [], [], []
 seen_ids = set()
 
 for ev in events:
     ev_id = ev.get("id")
-    if ev_id in seen_ids:
-        continue
+    if ev_id in seen_ids: continue
     seen_ids.add(ev_id)
 
     raw_date = ev.get("date_iso", "")
-    try:
-        event_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        event_date = datetime(2099, 12, 31).date()
+    try: event_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+    except: event_date = datetime(2099, 12, 31).date()
 
-    if event_date < today:
-        past_events.append(ev)
-    elif today <= event_date <= end_of_week:
-        current_week_events.append(ev)
-    else:
-        future_events.append(ev)
+    if event_date < today: past_events.append(ev)
+    elif today <= event_date <= end_of_week: current_week_events.append(ev)
+    else: future_events.append(ev)
 
 # ---------------------------------------------------------
 # Tabs definieren
 # ---------------------------------------------------------
-tab_upload, tab_current, tab_future, tab_past = st.tabs([
-    "➕ Flyer hinzufügen",
+tab_current, tab_future, tab_upload, tab_past = st.tabs([
     f"🔥 Diese Woche ({len(current_week_events)})",
-    f"🔮 Demnächst / Zukunft ({len(future_events)})",
-    f"📦 Archiv / Vergangen ({len(past_events)})",
+    f"🔮 Demnächst ({len(future_events)})",
+    "➕ Neuer Flyer",
+    f"📦 Archiv ({len(past_events)})",
 ])
 
-# =========================================================
-# TAB 1: Flyer / Screenshot hochladen
-# =========================================================
-with tab_upload:
-    st.header("1. Flyer oder Screenshot hinzufügen")
-    st.info("💡 **Tipp:** Wähle einen Flyer oder einen Screenshot aus deiner Galerie aus, um ein Event automatisch per KI zu erstellen.")
-
-    uploaded_file = st.file_uploader(
-        "Bild/Screenshot auswählen (PNG, JPG)", 
-        type=["png", "jpg", "jpeg"],
-        key=f"uploader_{st.session_state.uploader_key}"
-    )
-
-    if uploaded_file and api_key and not st.session_state.pending_event:
-        if st.button("🔍 Bild analysieren"):
-            with st.spinner("Analysiere Bild mit Gemini API..."):
-                try:
-                    image = Image.open(uploaded_file)
-                    extracted_data = analyze_flyer(image, api_key)
-                    extracted_data["image_base64"] = image_to_base64(image)
-                    st.session_state.pending_event = extracted_data
-                    st.success("Analyse erfolgreich! Überprüfe die Daten unten.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Fehler bei der Analyse: {e}")
-
-    if st.session_state.pending_event:
-        st.subheader("📋 Daten überprüfen & anpassen")
-        pending = st.session_state.pending_event
-
-        col_form_img, col_form_inputs = st.columns([1, 2])
-        with col_form_img:
-            if "image_base64" in pending:
-                st.image(
-                    base64.b64decode(pending["image_base64"]),
-                    caption="Analysierter Screenshot/Flyer",
-                    width=220,
-                )
-
-        with col_form_inputs:
-            edited_title = st.text_input("Titel des Events", value=pending.get("title", ""))
-            col_d1, col_d2, col_t = st.columns([1, 1, 1])
-            with col_d1:
-                edited_date_display = st.text_input("Datum (Anzeige)", value=pending.get("date_display", ""))
-            with col_d2:
-                edited_date_iso = st.text_input(
-                    "Datum (YYYY-MM-DD)",
-                    value=pending.get("date_iso", datetime.now().strftime("%Y-%m-%d")),
-                )
-            with col_t:
-                edited_time = st.text_input("Uhrzeit", value=pending.get("time", ""))
-
-            edited_location = st.text_input("Ort / Location", value=pending.get("location", ""))
-            edited_description = st.text_area("Beschreibung", value=pending.get("description", ""))
-
-            btn1, btn2 = st.columns([1, 1])
-            with btn1:
-                if st.button("🚀 Event veröffentlichen", type="primary"):
-                    final_event = {
-                        "id": str(int(time.time())),
-                        "title": edited_title,
-                        "date_display": edited_date_display,
-                        "date_iso": edited_date_iso,
-                        "time": edited_time,
-                        "location": edited_location,
-                        "description": edited_description,
-                        "votes": 0,
-                        "voters": [],
-                        "image_base64": pending.get("image_base64", ""),
-                    }
-                    data["events"].append(final_event)
-                    save_data(data)
-                    st.session_state.pending_event = None
-                    st.session_state.uploader_key += 1
-                    st.success(f"Event '{edited_title}' veröffentlicht!")
-                    st.rerun()
-            with btn2:
-                if st.button("❌ Abbrechen"):
-                    st.session_state.pending_event = None
-                    st.session_state.uploader_key += 1
-                    st.rerun()
-
 # ---------------------------------------------------------
-# Hilfsfunktion zum Rendern der Event-Listen
+# Hilfsfunktion zum Rendern der Listen
 # ---------------------------------------------------------
 def render_event_list(event_list, is_past=False):
     if not event_list:
         st.info("Keine Events in dieser Kategorie.")
         return
 
-    sorted_events = sorted(
-        event_list,
-        key=lambda x: (x.get("date_iso", "9999-99-99"), x.get("time", ""))
-    )
-
+    sorted_events = sorted(event_list, key=lambda x: (x.get("date_iso", "9999-99-99"), x.get("time", "")))
     last_date = None
 
     for idx, event in enumerate(sorted_events):
         event_date_iso = event.get("date_iso", "")
-
-        # Tagesüberschrift
         if event_date_iso != last_date:
-            formatted_day = format_german_date(event_date_iso)
-            st.markdown(f"##### 📅 {formatted_day}")
+            st.markdown(f"##### 📅 {format_german_date(event_date_iso)}")
             last_date = event_date_iso
 
         event_id = event.get("id", str(idx))
-        voters_list = event.get("voters", [])
+        voters_list = sorted(event.get("voters", []), key=str.lower)
 
-        # =========================================================
-        # ZEILE 1: Flexbox für Bild (links) & Teilnehmer (rechts)
-        # =========================================================
-        img_b64 = event.get("image_base64", "")
-        img_html = f'<img src="data:image/jpeg;base64,{img_b64}" style="width: 100px; border-radius: 6px;" />' if img_b64 else ""
-        
-        if voters_list:
-            names_str = ", ".join(voters_list)
-            names_html = f"<span style='color: #333;'>👥 <b>Dabei:</b> {names_str}</span>"
-        else:
-            names_html = "<span style='color: #888;'>👥 Noch keine Zusage</span>"
+        # Event-Karte mit Rahmen für bessere Struktur
+        with st.container(border=True):
+            # 1. Bild nativ rendern
+            img_b64 = event.get("image_base64", "")
+            if img_b64:
+                try:
+                    img_bytes = base64.b64decode(img_b64)
+                    st.image(img_bytes, width=350) 
+                except Exception:
+                    pass
 
-        components.html(f"""
-            <div style="display: flex; gap: 12px; align-items: flex-start; font-family: sans-serif; font-size: 14px; margin-bottom: 8px;">
-                <div style="flex-shrink: 0;">{img_html}</div>
-                <div style="flex-grow: 1; word-break: break-word;">{names_html}</div>
-            </div>
-        """, height=110)
+            # 2. Zusagen-Dropdown & Vote-Button nebeneinander
+            col_list, col_vote = st.columns([1, 1])
 
-        # =========================================================
-        # ZEILE 2: Der Abstimmungs-Knopf (volle Breite)
-        # =========================================================
-        if is_past:
-            st.info(f"🏆 {len(voters_list)} Stimmen")
-        else:
-            has_voted = current_user_name in voters_list
-            button_label = (
-                "❌ Abwählen"
-                if has_voted
-                else f"👍 Dafür ({len(voters_list)})"
-            )
+            with col_list:
+                with st.expander(f"👥 {len(voters_list)} Zusage(n)"):
+                    if voters_list:
+                        for voter in voters_list:
+                            st.write(f"• {voter}")
+                    else:
+                        st.write("Noch keine Zusagen.")
 
-            if st.button(button_label, key=f"vote_{event_id}", use_container_width=True):
-                if not has_voted:
-                    voters_list.append(current_user_name)
+            with col_vote:
+                if is_past:
+                    st.info("Event ist vorbei")
                 else:
-                    voters_list.remove(current_user_name)
-                event["votes"] = len(voters_list)
-                save_data(data)
-                st.rerun()
+                    if selected_user:
+                        has_voted = selected_user in voters_list
+                        if has_voted:
+                            btn_label = "👍 Zugesagt"
+                            btn_type = "primary"
+                        else:
+                            btn_label = "Zusagen"
+                            btn_type = "secondary"
+                    else:
+                        has_voted = False
+                        btn_label = "Zusagen"
+                        btn_type = "secondary"
 
-        # =========================================================
-        # ZEILE 3: Beschreibung / Ausklapper (volle Breite)
-        # =========================================================
-        event_title = event.get("title", "Unbekanntes Event")
-        with st.expander(f"📌 {event_title}"):
-            st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
-            st.write(f"⏰ **Uhrzeit:** {event.get('time', 'N/A')}")
-            st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
-            
-            desc = event.get("description", "")
-            if desc:
-                st.markdown(f"<small>{desc}</small>", unsafe_allow_html=True)
-
-        # =========================================================
-        # ADMIN-BEREICH (Sauber getrennt unter dem Event)
-        # =========================================================
-        if is_admin:
-            with st.expander(f"🛠️ Admin-Optionen für '{event_title}'"):
-                adm_col1, adm_col2 = st.columns([1, 1])
-
-                with adm_col1:
-                    if st.button("🗑️ Event löschen", key=f"del_{event_id}", type="primary"):
-                        data["events"] = [e for e in data["events"] if e.get("id") != event_id]
-                        save_data(data)
-                        st.success("Event gelöscht!")
-                        st.rerun()
-
-                with adm_col2:
-                    with st.popover("✏️ Event anpassen"):
-                        new_title = st.text_input("Titel", value=event.get("title"), key=f"ed_t_{event_id}")
-                        new_date_disp = st.text_input("Datum (Anzeige)", value=event.get("date_display"), key=f"ed_d_{event_id}")
-                        new_date_iso = st.text_input("Datum (YYYY-MM-DD)", value=event.get("date_iso"), key=f"ed_iso_{event_id}")
-                        new_loc = st.text_input("Ort", value=event.get("location"), key=f"ed_l_{event_id}")
-
-                        if st.button("Änderungen speichern", key=f"save_ed_{event_id}"):
-                            event["title"] = new_title
-                            event["date_display"] = new_date_disp
-                            event["date_iso"] = new_date_iso
-                            event["location"] = new_loc
+                    if st.button(btn_label, key=f"vote_{event_id}_{selected_user}", type=btn_type, use_container_width=True):
+                        if not selected_user:
+                            st.error("⚠️ Bitte oben zuerst deinen Namen wählen!")
+                        else:
+                            if not has_voted:
+                                voters_list.append(selected_user)
+                            else:
+                                voters_list.remove(selected_user)
+                            event["voters"] = voters_list
+                            event["votes"] = len(voters_list)
                             save_data(data)
-                            st.success("Gespeichert!")
                             st.rerun()
 
-        st.markdown("<hr style='margin: 10px 0 15px 0;'>", unsafe_allow_html=True)
+            # 3. Event-Details
+            event_title = event.get("title", "Unbekanntes Event")
+            with st.expander(f"📌 {event_title} - Details"):
+                st.write(f"📅 **Datum:** {event.get('date_display', event.get('date_iso', 'N/A'))}")
+                st.write(f"⏰ **Uhrzeit:** {event.get('time', 'N/A')}")
+                st.write(f"📍 **Ort:** {event.get('location', 'N/A')}")
+                if event.get("description"):
+                    st.write(event.get("description"))
+
+            # 4. Admin-Bereich
+            if is_admin:
+                with st.expander(f"🛠️ Admin-Optionen"):
+                    c1, c2 = st.columns([1, 1])
+                    with c1:
+                        if st.button("🗑️ Löschen", key=f"del_{event_id}", type="primary"):
+                            data["events"] = [e for e in data["events"] if e.get("id") != event_id]
+                            save_data(data)
+                            st.rerun()
+                    with c2:
+                        with st.popover("✏️ Bearbeiten"):
+                            event["title"] = st.text_input("Titel", value=event.get("title"), key=f"ed_t_{event_id}")
+                            event["date_display"] = st.text_input("Anzeige", value=event.get("date_display"), key=f"ed_d_{event_id}")
+                            event["date_iso"] = st.text_input("ISO (YYYY-MM-DD)", value=event.get("date_iso"), key=f"ed_iso_{event_id}")
+                            event["location"] = st.text_input("Ort", value=event.get("location"), key=f"ed_l_{event_id}")
+                            if st.button("Speichern", key=f"save_ed_{event_id}"):
+                                save_data(data)
+                                st.rerun()
 
 # ---------------------------------------------------------
-# Inhalt für die restlichen Tabs
+# Tab-Inhalte zuweisen
 # ---------------------------------------------------------
-with tab_current:
-    render_event_list(current_week_events, is_past=False)
+with tab_current: render_event_list(current_week_events, is_past=False)
+with tab_future: render_event_list(future_events, is_past=False)
+with tab_past: render_event_list(past_events, is_past=True)
 
-with tab_future:
-    render_event_list(future_events, is_past=False)
+# ---------------------------------------------------------
+# TAB UPLOAD
+# ---------------------------------------------------------
+with tab_upload:
+    st.header("Flyer analysieren")
+    uploaded_file = st.file_uploader("Bild auswählen", type=["png", "jpg", "jpeg"], key=f"up_{st.session_state.uploader_key}")
 
-with tab_past:
-    render_event_list(past_events, is_past=True)
+    if uploaded_file and api_key and not st.session_state.pending_event:
+        if st.button("🔍 Analysieren"):
+            with st.spinner("Gemini liest den Flyer..."):
+                img = Image.open(uploaded_file)
+                ext = analyze_flyer(img, api_key)
+                ext["image_base64"] = image_to_base64(img)
+                st.session_state.pending_event = ext
+                st.rerun()
+
+    if st.session_state.pending_event:
+        st.subheader("📋 Daten prüfen")
+        p = st.session_state.pending_event
+        if "image_base64" in p:
+            st.image(base64.b64decode(p["image_base64"]), width=200)
+
+        t = st.text_input("Titel", value=p.get("title", ""))
+        d1 = st.text_input("Datum Anzeige", value=p.get("date_display", ""))
+        d2 = st.text_input("Datum ISO", value=p.get("date_iso", datetime.now().strftime("%Y-%m-%d")))
+        tm = st.text_input("Uhrzeit", value=p.get("time", ""))
+        l = st.text_input("Ort", value=p.get("location", ""))
+        ds = st.text_area("Beschreibung", value=p.get("description", ""))
+
+        c1, c2 = st.columns(2)
+        if c1.button("🚀 Speichern", type="primary"):
+            data["events"].append({
+                "id": str(int(time.time())), "title": t, "date_display": d1, "date_iso": d2, 
+                "time": tm, "location": l, "description": ds, "votes": 0, "voters": [], 
+                "image_base64": p.get("image_base64", "")
+            })
+            save_data(data)
+            st.session_state.pending_event = None
+            st.session_state.uploader_key += 1
+            st.rerun()
+        if c2.button("❌ Abbrechen"):
+            st.session_state.pending_event = None
+            st.session_state.uploader_key += 1
+            st.rerun()
