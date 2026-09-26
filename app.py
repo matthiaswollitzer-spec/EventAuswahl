@@ -188,16 +188,14 @@ def format_german_date(date_obj):
 
 
 today = datetime.date.today()
-start_of_week = today - datetime.timedelta(days=today.weekday())
-end_of_week = start_of_week + datetime.timedelta(days=6)
-
+end_of_7_days = today + datetime.timedelta(days=7)
 
 def get_target_tab_name(date_obj):
     if not isinstance(date_obj, datetime.date):
         return "🔮 Zukünftig"
-    if start_of_week <= date_obj <= end_of_week:
+    if today <= date_obj <= end_of_7_days:
         return "📍 Aktuelle Woche"
-    elif date_obj > end_of_week:
+    elif date_obj > end_of_7_days:
         return "🔮 Zukünftig"
     else:
         return "📜 Vergangen"
@@ -386,7 +384,7 @@ def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
             render_single_event_card(ev, is_preview=False, is_admin=is_admin)
 
 
-# EVENT KATEGORISIERUNG
+# EVENT KATEGORISIERUNG (Heute bis Heute + 7 Tage)
 current_week_events = []
 future_events = []
 past_events = []
@@ -395,9 +393,9 @@ for event in data.get("events", []):
     d_str = event.get("date", "")
     try:
         ev_date = datetime.datetime.strptime(d_str, "%Y-%m-%d").date()
-        if start_of_week <= ev_date <= end_of_week:
+        if today <= ev_date <= end_of_7_days:
             current_week_events.append(event)
-        elif ev_date > end_of_week:
+        elif ev_date > end_of_7_days:
             future_events.append(event)
         else:
             past_events.append(event)
