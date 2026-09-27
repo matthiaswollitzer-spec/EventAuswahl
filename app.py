@@ -2,6 +2,8 @@ import base64
 import datetime
 import io
 import json
+import random
+import time
 import requests
 import PIL.Image
 import streamlit as st
@@ -55,7 +57,7 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. GOOGLE DRIVE PERSISTENCE
+# 2. GOOGLE DRIVE PERSISTENCE & LOCKING
 # ---------------------------------------------------------
 def get_drive_service():
     creds_dict = dict(st.secrets["gcp_service_account"])
@@ -69,17 +71,47 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 
-def load_data():
-    try:
-        service = get_drive_service()
-        folder_id = st.secrets["DRIVE_FOLDER_ID"]
-
-        query = f"'{folder_id}' in parents and name = 'data.json' and trashed = false"
+def acquire_lock(service, folder_id, lock_filename, max_retries=5):
+    """Versucht eine Sperrdatei zu erstellen, um paralleles Schreiben zu verhindern."""
+    for _ in range(max_retries):
+        query = f"'{folder_id}' in parents and name = '{lock_filename}' and trashed = false"
         results = service.files().list(q=query, fields="files(id)").execute()
         files = results.get('files', [])
 
         if not files:
-            return {"users": ["Anna", "Julian", "Matthias"], "events": []}
+            try:
+                file_metadata = {'name': lock_filename, 'parents': [folder_id]}
+                service.files().create(body=file_metadata).execute()
+                return True
+            except Exception:
+                pass
+        time.sleep(random.uniform(0.2, 0.5))
+    return False
+
+
+def release_lock(service, folder_id, lock_filename):
+    """Entfernt die Sperrdatei nach dem Speichern."""
+    try:
+        query = f"'{folder_id}' in parents and name = '{lock_filename}' and trashed = false"
+        results = service.files().list(q=query, fields="files(id)").execute()
+        files = results.get('files', [])
+        for f in files:
+            service.files().delete(fileId=f['id']).execute()
+    except Exception:
+        pass
+
+
+def load_json_file(filename, default_value):
+    try:
+        service = get_drive_service()
+        folder_id = st.secrets["DRIVE_FOLDER_ID"]
+
+        query = f"'{folder_id}' in parents and name = '{filename}' and trashed = false"
+        results = service.files().list(q=query, fields="files(id)").execute()
+        files = results.get('files', [])
+
+        if not files:
+            return default_value
 
         file_id = files[0]['id']
         request = service.files().get_media(fileId=file_id)
@@ -93,33 +125,45 @@ def load_data():
         file_stream.seek(0)
         return json.loads(file_stream.read().decode('utf-8'))
     except Exception as e:
-        st.error(f"Fehler beim Laden von Google Drive: {e}")
-        return {"users": ["Anna", "Julian", "Matthias"], "events": []}
+        st.error(f"Fehler beim Laden von {filename}: {e}")
+        return default_value
 
 
-def save_data(data):
-    try:
-        service = get_drive_service()
-        folder_id = st.secrets["DRIVE_FOLDER_ID"]
+def save_json_file_with_lock(filename, data_content):
+    service = get_drive_service()
+    folder_id = st.secrets["DRIVE_FOLDER_ID"]
+    lock_filename = f"{filename}.lock"
 
-        json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
-        media = MediaInMemoryUpload(json_bytes, mimetype='application/json', resumable=True)
+    if acquire_lock(service, folder_id, lock_filename):
+        try:
+            json_bytes = json.dumps(data_content, ensure_ascii=False, indent=2).encode('utf-8')
+            media = MediaInMemoryUpload(json_bytes, mimetype='application/json', resumable=True)
 
-        query = f"'{folder_id}' in parents and name = 'data.json' and trashed = false"
-        results = service.files().list(q=query, fields="files(id)").execute()
-        files = results.get('files', [])
+            query = f"'{folder_id}' in parents and name = '{filename}' and trashed = false"
+            results = service.files().list(q=query, fields="files(id)").execute()
+            files = results.get('files', [])
 
-        if files:
-            file_id = files[0]['id']
-            service.files().update(fileId=file_id, media_body=media).execute()
-        else:
-            file_metadata = {'name': 'data.json', 'parents': [folder_id]}
-            service.files().create(body=file_metadata, media_body=media).execute()
-
-        return True
-    except Exception as e:
-        st.error(f"Fehler beim Speichern in Google Drive: {e}")
+            if files:
+                file_id = files[0]['id']
+                service.files().update(fileId=file_id, media_body=media).execute()
+            else:
+                file_metadata = {'name': filename, 'parents': [folder_id]}
+                service.files().create(body=file_metadata, media_body=media).execute()
+            return True
+        except Exception as e:
+            st.error(f"Fehler beim Speichern von {filename}: {e}")
+            return False
+        finally:
+            release_lock(service, folder_id, lock_filename)
+    else:
+        st.error("⚠️ Server beschäftigt. Die Datei wird gerade bearbeitet, bitte versuche es erneut.")
         return False
+
+
+def load_all_data():
+    events_data = load_json_file("events.json", {"events": []})
+    votes_data = load_json_file("votes.json", {"users": ["Anna", "Julian", "Matthias"], "votes": {}})
+    return events_data, votes_data
 
 
 # ---------------------------------------------------------
@@ -190,6 +234,7 @@ def format_german_date(date_obj):
 today = datetime.date.today()
 end_of_7_days = today + datetime.timedelta(days=7)
 
+
 def get_target_tab_name(date_obj):
     if not isinstance(date_obj, datetime.date):
         return "🔮 Zukünftig"
@@ -201,11 +246,11 @@ def get_target_tab_name(date_obj):
         return "📜 Vergangen"
 
 
-def is_duplicate_event(data, title, date_str, current_event_id=None):
+def is_duplicate_event(events, title, date_str, current_event_id=None):
     clean_title = title.strip().lower()
     clean_date = date_str.strip()
 
-    for ev in data.get("events", []):
+    for ev in events:
         if current_event_id and ev.get("id") == current_event_id:
             continue
         if ev.get("title", "").strip().lower() == clean_title and ev.get("date", "").strip() == clean_date:
@@ -215,12 +260,11 @@ def is_duplicate_event(data, title, date_str, current_event_id=None):
 
 # ---------------------------------------------------------
 # 4. SINGLE EVENT CARD RENDERER
-# Structure: 1. Image -> 2. Zusagen Dropdown -> 3. Event Daten Dropdown
 # ---------------------------------------------------------
-def render_single_event_card(ev, is_preview=False, is_admin=False):
+def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
     ev_id = ev.get("id", "preview_id")
 
-    # 1. IMAGE DISPLAY (ROBUST BASE64 DECODING)
+    # 1. BILD
     flyer_data = ev.get("flyer_b64") or ev.get("image_b64")
     if flyer_data:
         try:
@@ -228,11 +272,11 @@ def render_single_event_card(ev, is_preview=False, is_admin=False):
                 flyer_data = flyer_data.split(",")[1]
             img_bytes = base64.b64decode(flyer_data)
             st.image(img_bytes, use_container_width=True)
-        except Exception as e:
+        except Exception:
             st.caption("⚠️ Bild konnte nicht angezeigt werden.")
 
-    # 2. ZUSAGEN DROPDOWN
-    participants = ev.get("participants", [])
+    # 2. ZUSAGEN DROPDOWN (aus votes_dict)
+    participants = votes_dict.get(ev_id, [])
     current_user = st.session_state.get("current_user")
     has_user = current_user and current_user != "-- Bitte wählen --"
     is_attending = has_user and (current_user in participants)
@@ -252,16 +296,24 @@ def render_single_event_card(ev, is_preview=False, is_admin=False):
                 if not has_user:
                     st.warning("⚠️ Bitte wähle oben dein Profil aus, um abzustimmen!")
                 else:
-                    if is_attending:
-                        participants.remove(current_user)
-                    else:
-                        participants.append(current_user)
+                    # Neuesten Stand der votes_data laden
+                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+                    votes_map = latest_votes_file.get("votes", {})
+                    current_event_participants = votes_map.get(ev_id, [])
 
-                    ev["participants"] = participants
-                    if save_data(st.session_state["data"]):
+                    if current_user in current_event_participants:
+                        current_event_participants.remove(current_user)
+                    else:
+                        current_event_participants.append(current_user)
+
+                    votes_map[ev_id] = current_event_participants
+                    latest_votes_file["votes"] = votes_map
+
+                    if save_json_file_with_lock("votes.json", latest_votes_file):
+                        st.session_state["votes_data"] = latest_votes_file
                         st.rerun()
 
-    # 3. EVENT DATEN DROPDOWN
+    # 3. DETAILS DROPDOWN
     title_text = ev.get('title', 'Unbenanntes Event')
     with st.expander(f"📌 {title_text} - Details (Uhrzeit, Ort, Beschreibung)", expanded=False):
         st.write(f"📅 **Datum:** {ev.get('date', 'N/A')}")
@@ -271,22 +323,34 @@ def render_single_event_card(ev, is_preview=False, is_admin=False):
             st.write(f"💬 **Beschreibung:** {ev.get('description')}")
         st.caption(f"Erstellt von: {ev.get('created_by', 'Anonym')}")
 
-    # LÖSCHEN-KNOPF FÜR ADMIN DIRECT AM EVENT
+    # LÖSCHEN (ADMIN)
     if is_admin and not is_preview:
         if st.button(f"🗑️ Event '{title_text}' löschen (Admin)", key=f"admin_del_direct_{ev_id}"):
-            st.session_state["data"]["events"] = [e for e in st.session_state["data"]["events"] if e.get("id") != ev_id]
-            if save_data(st.session_state["data"]):
+            latest_events = load_json_file("events.json", {"events": []})
+            latest_events["events"] = [e for e in latest_events.get("events", []) if e.get("id") != ev_id]
+
+            latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+            if ev_id in latest_votes_file.get("votes", {}):
+                del latest_votes_file["votes"][ev_id]
+
+            if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
+                st.session_state["events_data"] = latest_events
+                st.session_state["votes_data"] = latest_votes_file
                 st.success("Event erfolgreich gelöscht.")
                 st.rerun()
 
 
 # ---------------------------------------------------------
-# 5. SESSION STATE INITIALIZATION
+# 5. INITIALISIERUNG
 # ---------------------------------------------------------
-if "data" not in st.session_state:
-    st.session_state["data"] = load_data()
+if "events_data" not in st.session_state or "votes_data" not in st.session_state:
+    events_d, votes_d = load_all_data()
+    st.session_state["events_data"] = events_d
+    st.session_state["votes_data"] = votes_d
 
-data = st.session_state["data"]
+events_data = st.session_state["events_data"]
+votes_data = st.session_state["votes_data"]
+votes_map = votes_data.get("votes", {})
 
 
 # ---------------------------------------------------------
@@ -306,12 +370,12 @@ with st.sidebar:
 
 
 # ---------------------------------------------------------
-# 7. HEADER & PROFILE SELECTION
+# 7. HEADER & USER SELECT
 # ---------------------------------------------------------
 st.title("📅 Event Planner")
 
 NO_USER_SELECTED = "-- Bitte wählen --"
-user_list = data.get("users", [])
+user_list = votes_data.get("users", [])
 user_options = [NO_USER_SELECTED] + user_list
 
 current_selection = st.session_state.get("current_user", NO_USER_SELECTED)
@@ -331,15 +395,17 @@ with col_user_select:
 with col_reload_btn:
     st.write("")
     st.write("")
-    if st.button("🔄 Drive", help="Daten neu aus Google Drive laden"):
-        st.session_state["data"] = load_data()
+    if st.button("🔄 Drive", help="Neu aus Google Drive laden"):
+        ev_d, vo_d = load_all_data()
+        st.session_state["events_data"] = ev_d
+        st.session_state["votes_data"] = vo_d
         st.rerun()
 
 st.markdown("---")
 
 
 # ---------------------------------------------------------
-# 8. NAVIGATION TABS
+# 8. TABS
 # ---------------------------------------------------------
 tab_titles = ["📍 Aktuelle Woche", "🔮 Zukünftig", "📜 Vergangen", "➕ Neues Event"]
 if is_admin:
@@ -354,9 +420,6 @@ tab_add = tabs[3]
 tab_admin = tabs[4] if is_admin else None
 
 
-# ---------------------------------------------------------
-# HELPER: EVENT-LISTE RENDERN
-# ---------------------------------------------------------
 def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
     if not event_list:
         st.info(empty_msg)
@@ -381,15 +444,14 @@ def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
         st.markdown(f'<div class="date-header">{formatted_date}</div>', unsafe_allow_html=True)
 
         for ev in day_events:
-            render_single_event_card(ev, is_preview=False, is_admin=is_admin)
+            render_single_event_card(ev, votes_map, is_preview=False, is_admin=is_admin)
 
 
-# EVENT KATEGORISIERUNG (Heute bis Heute + 7 Tage)
 current_week_events = []
 future_events = []
 past_events = []
 
-for event in data.get("events", []):
+for event in events_data.get("events", []):
     d_str = event.get("date", "")
     try:
         ev_date = datetime.datetime.strptime(d_str, "%Y-%m-%d").date()
@@ -425,7 +487,6 @@ with tab_add:
 
     uploader_key = st.session_state.get("uploader_key", "flyer_uploader_0")
 
-    # 1. KI-ANALYSE
     uploaded_flyer = st.file_uploader("Flyer-Bild auswählen & analysieren", type=["jpg", "jpeg", "png"], key=uploader_key)
     
     if uploaded_flyer and st.button("🪄 Flyer mit KI analysieren"):
@@ -460,7 +521,6 @@ with tab_add:
         except Exception:
             pass
 
-    # 2. MANUELLES FORMULAR
     with st.form("event_input_form", clear_on_submit=True):
         f_title = st.text_input("Titel*", value=st.session_state.get("form_title", ""))
         
@@ -480,9 +540,11 @@ with tab_add:
         f_file = st.file_uploader("Anderes Bild hochladen (optional)", type=["jpg", "jpeg", "png"])
 
         if st.form_submit_button("💾 Event speichern"):
+            latest_events = load_json_file("events.json", {"events": []})
+
             if not f_title:
                 st.error("Bitte gib einen Titel ein.")
-            elif is_duplicate_event(data, f_title, str(f_date)):
+            elif is_duplicate_event(latest_events.get("events", []), f_title, str(f_date)):
                 st.error(f"⚠️ Ein Event mit dem Namen '{f_title}' existiert bereits am {f_date}!")
             else:
                 b64_img = ""
@@ -496,21 +558,22 @@ with tab_add:
                 if creator == NO_USER_SELECTED:
                     creator = "Anonym"
 
+                new_event_id = str(datetime.datetime.now().timestamp())
                 new_event = {
-                    "id": str(datetime.datetime.now().timestamp()),
+                    "id": new_event_id,
                     "title": f_title,
                     "date": str(f_date),
                     "time": f_time,
                     "location": f_loc,
                     "description": f_desc,
                     "created_by": creator,
-                    "participants": [],
                     "flyer_b64": b64_img
                 }
 
-                data["events"].append(new_event)
+                latest_events["events"].append(new_event)
 
-                if save_data(data):
+                if save_json_file_with_lock("events.json", latest_events):
+                    st.session_state["events_data"] = latest_events
                     for key in ["form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64"]:
                         st.session_state.pop(key, None)
 
@@ -529,8 +592,8 @@ if is_admin and tab_admin:
     with tab_admin:
         st.subheader("⚙️ Admin-Bereich")
 
-        if "users" not in data or not isinstance(data["users"], list):
-            data["users"] = ["Anna", "Julian", "Matthias"]
+        if "users" not in votes_data or not isinstance(votes_data["users"], list):
+            votes_data["users"] = ["Anna", "Julian", "Matthias"]
 
         st.markdown("---")
         st.write("### 👥 Nutzer verwalten")
@@ -540,9 +603,11 @@ if is_admin and tab_admin:
             if st.button("Nutzer anlegen", key="add_user_btn"):
                 clean_name = new_user_name.strip()
                 if clean_name:
-                    if clean_name not in data["users"]:
-                        data["users"].append(clean_name)
-                        if save_data(data):
+                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+                    if clean_name not in latest_votes_file["users"]:
+                        latest_votes_file["users"].append(clean_name)
+                        if save_json_file_with_lock("votes.json", latest_votes_file):
+                            st.session_state["votes_data"] = latest_votes_file
                             st.success(f"Nutzer '{clean_name}' hinzugefügt!")
                             st.rerun()
                     else:
@@ -550,7 +615,7 @@ if is_admin and tab_admin:
                 else:
                     st.warning("Bitte gib einen Namen ein.")
 
-        for user in data["users"]:
+        for user in votes_data["users"]:
             col_name, col_rename_input, col_btn_rename, col_btn_del = st.columns([2, 2, 1, 1])
 
             with col_name:
@@ -562,30 +627,46 @@ if is_admin and tab_admin:
             with col_btn_rename:
                 if st.button("✏️", key=f"rename_btn_{user}", help=f"Nutzer '{user}' umbenennen"):
                     clean_new_name = new_name.strip()
-                    if clean_new_name and clean_new_name not in data["users"]:
-                        user_index = data["users"].index(user)
-                        data["users"][user_index] = clean_new_name
+                    latest_events = load_json_file("events.json", {"events": []})
+                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
 
-                        for event in data.get("events", []):
-                            if event.get("created_by") == user:
-                                event["created_by"] = clean_new_name
-                            if "participants" in event and user in event["participants"]:
-                                event["participants"] = [clean_new_name if p == user else p for p in event["participants"]]
+                    if clean_new_name and clean_new_name not in latest_votes_file["users"]:
+                        user_index = latest_votes_file["users"].index(user)
+                        latest_votes_file["users"][user_index] = clean_new_name
+
+                        for ev in latest_events.get("events", []):
+                            if ev.get("created_by") == user:
+                                ev["created_by"] = clean_new_name
+
+                        votes_map_temp = latest_votes_file.get("votes", {})
+                        for ev_id, p_list in votes_map_temp.items():
+                            votes_map_temp[ev_id] = [clean_new_name if p == user else p for p in p_list]
+                        latest_votes_file["votes"] = votes_map_temp
 
                         if st.session_state.get("current_user") == user:
                             st.session_state["current_user"] = clean_new_name
 
-                        if save_data(data):
+                        if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
+                            st.session_state["events_data"] = latest_events
+                            st.session_state["votes_data"] = latest_votes_file
                             st.success(f"'{user}' umbenannt!")
                             st.rerun()
 
             with col_btn_del:
                 if st.button("🗑️", key=f"delete_btn_{user}", help=f"Nutzer '{user}' löschen"):
-                    if len(data["users"]) > 1:
-                        data["users"].remove(user)
-                        for event in data.get("events", []):
-                            if "participants" in event and user in event["participants"]:
-                                event["participants"].remove(user)
-                        if save_data(data):
+                    latest_events = load_json_file("events.json", {"events": []})
+                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+
+                    if len(latest_votes_file["users"]) > 1:
+                        latest_votes_file["users"].remove(user)
+                        votes_map_temp = latest_votes_file.get("votes", {})
+                        for ev_id, p_list in votes_map_temp.items():
+                            if user in p_list:
+                                p_list.remove(user)
+                        latest_votes_file["votes"] = votes_map_temp
+
+                        if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
+                            st.session_state["events_data"] = latest_events
+                            st.session_state["votes_data"] = latest_votes_file
                             st.success(f"Nutzer '{user}' gelöscht!")
                             st.rerun()
