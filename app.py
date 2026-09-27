@@ -72,7 +72,6 @@ def get_drive_service():
 
 
 def acquire_lock(service, folder_id, lock_filename, max_retries=5):
-    """Versucht eine Sperrdatei zu erstellen, um paralleles Schreiben zu verhindern."""
     for _ in range(max_retries):
         query = f"'{folder_id}' in parents and name = '{lock_filename}' and trashed = false"
         results = service.files().list(q=query, fields="files(id)").execute()
@@ -90,7 +89,6 @@ def acquire_lock(service, folder_id, lock_filename, max_retries=5):
 
 
 def release_lock(service, folder_id, lock_filename):
-    """Entfernt die Sperrdatei nach dem Speichern."""
     try:
         query = f"'{folder_id}' in parents and name = '{lock_filename}' and trashed = false"
         results = service.files().list(q=query, fields="files(id)").execute()
@@ -259,7 +257,7 @@ def is_duplicate_event(events, title, date_str, current_event_id=None):
 
 
 # ---------------------------------------------------------
-# 4. SINGLE EVENT CARD RENDERER
+# 4. SINGLE EVENT CARD RENDERER (MIT "VIELLEICHT"-SUPPORT)
 # ---------------------------------------------------------
 def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
     ev_id = ev.get("id", "preview_id")
@@ -275,43 +273,61 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
         except Exception:
             st.caption("⚠️ Bild konnte nicht angezeigt werden.")
 
-    # 2. ZUSAGEN DROPDOWN (aus votes_dict)
-    participants = votes_dict.get(ev_id, [])
+    # 2. ZUSAGEN / VIELLEICHT DROPDOWN
+    event_votes = votes_dict.get(ev_id, {})
+    
+    # Kompatibilität für alte votes.json (falls dort noch eine einfache Liste steht)
+    if isinstance(event_votes, list):
+        event_votes = {user: "yes" for user in event_votes}
+
+    yes_list = [user for user, status in event_votes.items() if status == "yes"]
+    maybe_list = [user for user, status in event_votes.items() if status == "maybe"]
+
     current_user = st.session_state.get("current_user")
     has_user = current_user and current_user != "-- Bitte wählen --"
-    is_attending = has_user and (current_user in participants)
+    user_status = event_votes.get(current_user, "none") if has_user else "none"
 
-    with st.expander(f"👥 Zusagen ({len(participants)})", expanded=False):
-        if participants:
-            st.write("**Teilnehmer:**")
-            for p in participants:
-                st.write(f"- {p}")
-        else:
-            st.write("Noch keine Zusagen.")
+    expander_title = f"👥 Rückmeldungen: {len(yes_list)} Zusagen"
+    if maybe_list:
+        expander_title += f", {len(maybe_list)} Vielleicht"
+
+    with st.expander(expander_title, expanded=False):
+        col_yes, col_maybe = st.columns(2)
+        with col_yes:
+            st.write("**✅ Dabeisein:**")
+            if yes_list:
+                for p in yes_list:
+                    st.write(f"- {p}")
+            else:
+                st.caption("Keine Zusagen")
+
+        with col_maybe:
+            st.write("**❓ Vielleicht:**")
+            if maybe_list:
+                for p in maybe_list:
+                    st.write(f"- {p}")
+            else:
+                st.caption("Keine Unsicheren")
 
         if not is_preview:
             st.markdown("---")
-            btn_label = "❌ Absagen" if is_attending else "✅ Zusage erteilen"
-            if st.button(btn_label, key=f"join_{ev_id}"):
-                if not has_user:
-                    st.warning("⚠️ Bitte wähle oben dein Profil aus, um abzustimmen!")
-                else:
-                    # Neuesten Stand der votes_data laden
-                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
-                    votes_map = latest_votes_file.get("votes", {})
-                    current_event_participants = votes_map.get(ev_id, [])
+            st.write("**Deine Rückmeldung:**")
+            
+            btn_col1, btn_col2, btn_col3 = st.columns(3)
+            
+            with btn_col1:
+                btn_yes_type = "primary" if user_status == "yes" else "secondary"
+                if st.button("✅ Zusage", key=f"vote_yes_{ev_id}", type=btn_yes_type):
+                    update_vote_status(ev_id, current_user, "yes", has_user)
 
-                    if current_user in current_event_participants:
-                        current_event_participants.remove(current_user)
-                    else:
-                        current_event_participants.append(current_user)
+            with btn_col2:
+                btn_maybe_type = "primary" if user_status == "maybe" else "secondary"
+                if st.button("❓ Vielleicht", key=f"vote_maybe_{ev_id}", type=btn_maybe_type):
+                    update_vote_status(ev_id, current_user, "maybe", has_user)
 
-                    votes_map[ev_id] = current_event_participants
-                    latest_votes_file["votes"] = votes_map
-
-                    if save_json_file_with_lock("votes.json", latest_votes_file):
-                        st.session_state["votes_data"] = latest_votes_file
-                        st.rerun()
+            with btn_col3:
+                if st.button("❌ Absagen", key=f"vote_no_{ev_id}"):
+                    update_vote_status(ev_id, current_user, "none", has_user)
 
     # 3. DETAILS DROPDOWN
     title_text = ev.get('title', 'Unbenanntes Event')
@@ -340,21 +356,45 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
                 st.rerun()
 
 
+def update_vote_status(ev_id, current_user, new_status, has_user):
+    if not has_user:
+        st.warning("⚠️ Bitte wähle oben dein Profil aus, um abzustimmen!")
+        return
+
+    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+    votes_map = latest_votes_file.get("votes", {})
+    
+    event_votes = votes_map.get(ev_id, {})
+    if isinstance(event_votes, list):  # Migration alter Daten
+        event_votes = {u: "yes" for u in event_votes}
+
+    if new_status == "none":
+        event_votes.pop(current_user, None)
+    else:
+        event_votes[current_user] = new_status
+
+    votes_map[ev_id] = event_votes
+    latest_votes_file["votes"] = votes_map
+
+    if save_json_file_with_lock("votes.json", latest_votes_file):
+        st.session_state["votes_data"] = latest_votes_file
+        st.rerun()
+
+
 # ---------------------------------------------------------
-# 5. INITIALISIERUNG
+# 5. INITIALISIERUNG & REST DES CODES (Unverändert)
 # ---------------------------------------------------------
 if "events_data" not in st.session_state or "votes_data" not in st.session_state:
-    events_d, votes_d = load_all_data()
+    events_d, vo_d = load_all_data()
     st.session_state["events_data"] = events_d
-    st.session_state["votes_data"] = votes_d
+    st.session_state["votes_data"] = vo_d
 
 events_data = st.session_state["events_data"]
 votes_data = st.session_state["votes_data"]
 votes_map = votes_data.get("votes", {})
 
-
 # ---------------------------------------------------------
-# 6. SIDEBAR
+# 6. SIDEBAR & HEADER
 # ---------------------------------------------------------
 expected_pin = st.secrets.get("ADMIN_PIN", "#together#")
 
@@ -368,10 +408,6 @@ with st.sidebar:
     elif admin_pin_input != "":
         st.error("Falsche PIN")
 
-
-# ---------------------------------------------------------
-# 7. HEADER & USER SELECT
-# ---------------------------------------------------------
 st.title("📅 Event Planner")
 
 NO_USER_SELECTED = "-- Bitte wählen --"
@@ -403,9 +439,8 @@ with col_reload_btn:
 
 st.markdown("---")
 
-
 # ---------------------------------------------------------
-# 8. TABS
+# 7. TABS
 # ---------------------------------------------------------
 tab_titles = ["📍 Aktuelle Woche", "🔮 Zukünftig", "📜 Vergangen", "➕ Neues Event"]
 if is_admin:
@@ -464,7 +499,6 @@ for event in events_data.get("events", []):
     except ValueError:
         future_events.append(event)
 
-
 with tab_current:
     render_event_list(current_week_events, empty_msg="Keine Events in der aktuellen Woche.")
 
@@ -473,7 +507,6 @@ with tab_future:
 
 with tab_past:
     render_event_list(past_events, empty_msg="Keine vergangenen Events vorhanden.")
-
 
 # ---------------------------------------------------------
 # TAB 4: NEUES EVENT ERSTELLEN
@@ -584,7 +617,6 @@ with tab_add:
                     
                     st.rerun()
 
-
 # ---------------------------------------------------------
 # TAB 5: ADMIN BEREICH
 # ---------------------------------------------------------
@@ -639,8 +671,9 @@ if is_admin and tab_admin:
                                 ev["created_by"] = clean_new_name
 
                         votes_map_temp = latest_votes_file.get("votes", {})
-                        for ev_id, p_list in votes_map_temp.items():
-                            votes_map_temp[ev_id] = [clean_new_name if p == user else p for p in p_list]
+                        for ev_id, p_dict in votes_map_temp.items():
+                            if isinstance(p_dict, dict) and user in p_dict:
+                                p_dict[clean_new_name] = p_dict.pop(user)
                         latest_votes_file["votes"] = votes_map_temp
 
                         if st.session_state.get("current_user") == user:
@@ -660,9 +693,9 @@ if is_admin and tab_admin:
                     if len(latest_votes_file["users"]) > 1:
                         latest_votes_file["users"].remove(user)
                         votes_map_temp = latest_votes_file.get("votes", {})
-                        for ev_id, p_list in votes_map_temp.items():
-                            if user in p_list:
-                                p_list.remove(user)
+                        for ev_id, p_dict in votes_map_temp.items():
+                            if isinstance(p_dict, dict):
+                                p_dict.pop(user, None)
                         latest_votes_file["votes"] = votes_map_temp
 
                         if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
