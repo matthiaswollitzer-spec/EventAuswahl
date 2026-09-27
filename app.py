@@ -165,7 +165,7 @@ def load_all_data():
 
 
 # ---------------------------------------------------------
-# 3. HELPER FUNCTIONS
+# 3. HELPER FUNCTIONS & CALLBACKS
 # ---------------------------------------------------------
 def image_to_base64(image):
     if image.mode in ("RGBA", "P"):
@@ -256,6 +256,28 @@ def is_duplicate_event(events, title, date_str, current_event_id=None):
     return False
 
 
+# CALLBACK: Wird VOR dem Zeichnen der Widgets ausgeführt
+def prepare_edit_event(ev, flyer_data):
+    ev_id = ev.get("id")
+    st.session_state["edit_event_id"] = ev_id
+    st.session_state["form_title"] = ev.get("title", "")
+    st.session_state["form_date"] = ev.get("date", str(datetime.date.today()))
+    st.session_state["form_time"] = ev.get("time", "19:00")
+    st.session_state["form_location"] = ev.get("location", "")
+    st.session_state["form_description"] = ev.get("description", "")
+    if flyer_data:
+        st.session_state["form_flyer_b64"] = flyer_data
+    else:
+        st.session_state.pop("form_flyer_b64", None)
+    st.session_state["active_tab"] = "➕ Neues Event"
+
+
+def cancel_edit_mode():
+    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64"]:
+        st.session_state.pop(key, None)
+    st.session_state["active_tab"] = "📍 Aktuelle Woche"
+
+
 # ---------------------------------------------------------
 # 4. SINGLE EVENT CARD RENDERER
 # ---------------------------------------------------------
@@ -276,7 +298,6 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
     # 2. ZUSAGEN / VIELLEICHT DROPDOWN
     event_votes = votes_dict.get(ev_id, {})
     
-    # Kompatibilität für alte votes.json
     if isinstance(event_votes, list):
         event_votes = {user: "yes" for user in event_votes}
 
@@ -338,6 +359,16 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
         if ev.get("description"):
             st.write(f"💬 **Beschreibung:** {ev.get('description')}")
         st.caption(f"Erstellt von: {ev.get('created_by', 'Anonym')}")
+
+        if not is_preview:
+            st.markdown("---")
+            # NORMALE ANPASSEN-SCHALTFLÄCHE MIT ON_CLICK CALLBACK
+            st.button(
+                "✏️ Event anpassen",
+                key=f"edit_event_btn_{ev_id}",
+                on_click=prepare_edit_event,
+                args=(ev, flyer_data)
+            )
 
     # LÖSCHEN (ADMIN)
     if is_admin and not is_preview:
@@ -413,7 +444,6 @@ st.title("📅 Event Planner")
 
 NO_USER_SELECTED = "-- Bitte wählen --"
 
-# Namen alphabetisch sortieren
 raw_user_list = votes_data.get("users", [])
 sorted_user_list = sorted(raw_user_list, key=str.lower)
 user_options = [NO_USER_SELECTED] + sorted_user_list
@@ -441,25 +471,39 @@ with col_reload_btn:
         st.session_state["votes_data"] = vo_d
         st.rerun()
 
+# ERFOLGSMELDUNG
+if "add_success_msg" in st.session_state:
+    st.success(st.session_state["add_success_msg"])
+    del st.session_state["add_success_msg"]
+
 st.markdown("---")
 
 
 # ---------------------------------------------------------
-# 7. TABS
+# 7. INTERAKTIVE REITERLEISTE (SEGMENTED CONTROL)
 # ---------------------------------------------------------
 tab_titles = ["📍 Aktuelle Woche", "🔮 Zukünftig", "📜 Vergangen", "➕ Neues Event"]
 if is_admin:
     tab_titles.append("⚙️ Admin")
 
-tabs = st.tabs(tab_titles)
+# Falls beim Speichern ein Wechsel angefordert wurde:
+if "next_tab" in st.session_state:
+    st.session_state["active_tab"] = st.session_state.pop("next_tab")
 
-tab_current = tabs[0]
-tab_future = tabs[1]
-tab_past = tabs[2]
-tab_add = tabs[3]
-tab_admin = tabs[4] if is_admin else None
+if "active_tab" not in st.session_state or st.session_state["active_tab"] not in tab_titles:
+    st.session_state["active_tab"] = tab_titles[0]
+
+selected_tab = st.segmented_control(
+    "Navigation",
+    options=tab_titles,
+    key="active_tab",
+    label_visibility="collapsed"
+)
 
 
+# ---------------------------------------------------------
+# 8. EVENTS SORTIEREN & FILTERN
+# ---------------------------------------------------------
 def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
     if not event_list:
         st.info(empty_msg)
@@ -504,25 +548,30 @@ for event in events_data.get("events", []):
     except ValueError:
         future_events.append(event)
 
-with tab_current:
+
+# ---------------------------------------------------------
+# 9. INHALTE DER EINZELNEN TABS RENDERN
+# ---------------------------------------------------------
+if selected_tab == "📍 Aktuelle Woche":
     render_event_list(current_week_events, empty_msg="Keine Events in der aktuellen Woche.")
 
-with tab_future:
+elif selected_tab == "🔮 Zukünftig":
     render_event_list(future_events, empty_msg="Keine zukünftigen Events nach dieser Woche.")
 
-with tab_past:
+elif selected_tab == "📜 Vergangen":
     render_event_list(past_events, empty_msg="Keine vergangenen Events vorhanden.")
 
-
-# ---------------------------------------------------------
-# TAB 4: NEUES EVENT ERSTELLEN
-# ---------------------------------------------------------
-with tab_add:
-    st.subheader("Event hinzufügen")
+elif selected_tab == "➕ Neues Event":
+    is_editing = "edit_event_id" in st.session_state
     
-    if "add_success_msg" in st.session_state:
-        st.success(st.session_state["add_success_msg"])
-        del st.session_state["add_success_msg"]
+    if is_editing:
+        col_heading, col_cancel = st.columns([3, 1])
+        with col_heading:
+            st.subheader("✏️ Event bearbeiten / anpassen")
+        with col_cancel:
+            st.button("❌ Abbrechen", key="cancel_edit_mode", on_click=cancel_edit_mode)
+    else:
+        st.subheader("Event hinzufügen")
 
     uploader_key = st.session_state.get("uploader_key", "flyer_uploader_0")
 
@@ -550,11 +599,11 @@ with tab_add:
     st.write("### Event-Daten eingeben")
 
     if st.session_state.get("form_flyer_b64"):
-        st.write("**Übernommenes Flyer-Bild:**")
+        st.write("**Aktuelles / Übernommenes Flyer-Bild:**")
         try:
             prev_img = base64.b64decode(st.session_state["form_flyer_b64"])
             st.image(prev_img, width=250)
-            if st.button("❌ Übernommenes Bild entfernen"):
+            if st.button("❌ Bild entfernen"):
                 st.session_state.pop("form_flyer_b64", None)
                 st.rerun()
         except Exception:
@@ -576,14 +625,17 @@ with tab_add:
 
         f_loc = st.text_input("Ort / Location", value=st.session_state.get("form_location", ""))
         f_desc = st.text_area("Beschreibung", value=st.session_state.get("form_description", ""))
-        f_file = st.file_uploader("Anderes Bild hochladen (optional)", type=["jpg", "jpeg", "png"])
+        f_file = st.file_uploader("Neues Bild hochladen (optional)", type=["jpg", "jpeg", "png"])
 
-        if st.form_submit_button("💾 Event speichern"):
+        submit_btn_label = "🔄 Event aktualisieren" if is_editing else "💾 Event speichern"
+
+        if st.form_submit_button(submit_btn_label):
             latest_events = load_json_file("events.json", {"events": []})
+            edit_id = st.session_state.get("edit_event_id")
 
             if not f_title:
                 st.error("Bitte gib einen Titel ein.")
-            elif is_duplicate_event(latest_events.get("events", []), f_title, str(f_date)):
+            elif is_duplicate_event(latest_events.get("events", []), f_title, str(f_date), current_event_id=edit_id):
                 st.error(f"⚠️ Ein Event mit dem Namen '{f_title}' existiert bereits am {f_date}!")
             else:
                 b64_img = ""
@@ -597,122 +649,132 @@ with tab_add:
                 if creator == NO_USER_SELECTED:
                     creator = "Anonym"
 
-                new_event_id = str(datetime.datetime.now().timestamp())
-                new_event = {
-                    "id": new_event_id,
-                    "title": f_title,
-                    "date": str(f_date),
-                    "time": f_time,
-                    "location": f_loc,
-                    "description": f_desc,
-                    "created_by": creator,
-                    "flyer_b64": b64_img
-                }
+                target_tab_name = get_target_tab_name(f_date)
 
-                latest_events["events"].append(new_event)
+                if is_editing and edit_id:
+                    # BESTEHENDES EVENT AKTUALISIEREN
+                    for ev in latest_events.get("events", []):
+                        if ev.get("id") == edit_id:
+                            ev["title"] = f_title
+                            ev["date"] = str(f_date)
+                            ev["time"] = f_time
+                            ev["location"] = f_loc
+                            ev["description"] = f_desc
+                            ev["flyer_b64"] = b64_img
+                            break
+                    
+                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich aktualisiert!"
+                else:
+                    # NEUES EVENT NEU ANLEGEN
+                    new_event_id = str(datetime.datetime.now().timestamp())
+                    new_event = {
+                        "id": new_event_id,
+                        "title": f_title,
+                        "date": str(f_date),
+                        "time": f_time,
+                        "location": f_loc,
+                        "description": f_desc,
+                        "created_by": creator,
+                        "flyer_b64": b64_img
+                    }
+                    latest_events["events"].append(new_event)
+
+                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich freigegeben!"
 
                 if save_json_file_with_lock("events.json", latest_events):
                     st.session_state["events_data"] = latest_events
-                    for key in ["form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64"]:
+                    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64"]:
                         st.session_state.pop(key, None)
 
                     st.session_state["uploader_key"] = f"flyer_uploader_{datetime.datetime.now().timestamp()}"
-
-                    target_tab_name = get_target_tab_name(f_date)
-                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich freigegeben und zum Reiter **'{target_tab_name}'** hinzugefügt."
-                    
+                    # NÄCHSTEN TAB SICHER FÜR DEN NÄCHSTEN LAUF VORMERKEN
+                    st.session_state["next_tab"] = target_tab_name
                     st.rerun()
 
+elif is_admin and selected_tab == "⚙️ Admin":
+    st.subheader("⚙️ Admin-Bereich")
 
-# ---------------------------------------------------------
-# TAB 5: ADMIN BEREICH
-# ---------------------------------------------------------
-if is_admin and tab_admin:
-    with tab_admin:
-        st.subheader("⚙️ Admin-Bereich")
+    if "users" not in votes_data or not isinstance(votes_data["users"], list):
+        votes_data["users"] = ["Anna", "Julian", "Matthias"]
 
-        if "users" not in votes_data or not isinstance(votes_data["users"], list):
-            votes_data["users"] = ["Anna", "Julian", "Matthias"]
+    st.markdown("---")
+    st.write("### 👥 Nutzer verwalten")
 
-        st.markdown("---")
-        st.write("### 👥 Nutzer verwalten")
-
-        with st.expander("➕ Neuen Nutzer anlegen", expanded=False):
-            new_user_name = st.text_input("Name des neuen Nutzers", key="add_user_input")
-            if st.button("Nutzer anlegen", key="add_user_btn"):
-                clean_name = new_user_name.strip()
-                if clean_name:
-                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
-                    if clean_name not in latest_votes_file["users"]:
-                        latest_votes_file["users"].append(clean_name)
-                        latest_votes_file["users"].sort(key=str.lower)
-                        
-                        if save_json_file_with_lock("votes.json", latest_votes_file):
-                            st.session_state["votes_data"] = latest_votes_file
-                            st.success(f"Nutzer '{clean_name}' hinzugefügt!")
-                            st.rerun()
-                    else:
-                        st.warning(f"Nutzer '{clean_name}' existiert bereits.")
+    with st.expander("➕ Neuen Nutzer anlegen", expanded=False):
+        new_user_name = st.text_input("Name des neuen Nutzers", key="add_user_input")
+        if st.button("Nutzer anlegen", key="add_user_btn"):
+            clean_name = new_user_name.strip()
+            if clean_name:
+                latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+                if clean_name not in latest_votes_file["users"]:
+                    latest_votes_file["users"].append(clean_name)
+                    latest_votes_file["users"].sort(key=str.lower)
+                    
+                    if save_json_file_with_lock("votes.json", latest_votes_file):
+                        st.session_state["votes_data"] = latest_votes_file
+                        st.success(f"Nutzer '{clean_name}' hinzugefügt!")
+                        st.rerun()
                 else:
-                    st.warning("Bitte gib einen Namen ein.")
+                    st.warning(f"Nutzer '{clean_name}' existiert bereits.")
+            else:
+                st.warning("Bitte gib einen Namen ein.")
 
-        # Alphabetisch sortiert im Admin-Bereich anzeigen
-        sorted_admin_users = sorted(votes_data["users"], key=str.lower)
+    sorted_admin_users = sorted(votes_data["users"], key=str.lower)
 
-        for user in sorted_admin_users:
-            col_name, col_rename_input, col_btn_rename, col_btn_del = st.columns([2, 2, 1, 1])
+    for user in sorted_admin_users:
+        col_name, col_rename_input, col_btn_rename, col_btn_del = st.columns([2, 2, 1, 1])
 
-            with col_name:
-                st.write(f"👤 **{user}**")
+        with col_name:
+            st.write(f"👤 **{user}**")
 
-            with col_rename_input:
-                new_name = st.text_input("Neuer Name", value=user, key=f"rename_input_{user}", label_visibility="collapsed")
+        with col_rename_input:
+            new_name = st.text_input("Neuer Name", value=user, key=f"rename_input_{user}", label_visibility="collapsed")
 
-            with col_btn_rename:
-                if st.button("✏️", key=f"rename_btn_{user}", help=f"Nutzer '{user}' umbenennen"):
-                    clean_new_name = new_name.strip()
-                    latest_events = load_json_file("events.json", {"events": []})
-                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+        with col_btn_rename:
+            if st.button("✏️", key=f"rename_btn_{user}", help=f"Nutzer '{user}' umbenennen"):
+                clean_new_name = new_name.strip()
+                latest_events = load_json_file("events.json", {"events": []})
+                latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
 
-                    if clean_new_name and clean_new_name not in latest_votes_file["users"]:
-                        user_index = latest_votes_file["users"].index(user)
-                        latest_votes_file["users"][user_index] = clean_new_name
-                        latest_votes_file["users"].sort(key=str.lower)
+                if clean_new_name and clean_new_name not in latest_votes_file["users"]:
+                    user_index = latest_votes_file["users"].index(user)
+                    latest_votes_file["users"][user_index] = clean_new_name
+                    latest_votes_file["users"].sort(key=str.lower)
 
-                        for ev in latest_events.get("events", []):
-                            if ev.get("created_by") == user:
-                                ev["created_by"] = clean_new_name
+                    for ev in latest_events.get("events", []):
+                        if ev.get("created_by") == user:
+                            ev["created_by"] = clean_new_name
 
-                        votes_map_temp = latest_votes_file.get("votes", {})
-                        for ev_id, p_dict in votes_map_temp.items():
-                            if isinstance(p_dict, dict) and user in p_dict:
-                                p_dict[clean_new_name] = p_dict.pop(user)
-                        latest_votes_file["votes"] = votes_map_temp
+                    votes_map_temp = latest_votes_file.get("votes", {})
+                    for ev_id, p_dict in votes_map_temp.items():
+                        if isinstance(p_dict, dict) and user in p_dict:
+                            p_dict[clean_new_name] = p_dict.pop(user)
+                    latest_votes_file["votes"] = votes_map_temp
 
-                        if st.session_state.get("current_user") == user:
-                            st.session_state["current_user"] = clean_new_name
+                    if st.session_state.get("current_user") == user:
+                        st.session_state["current_user"] = clean_new_name
 
-                        if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
-                            st.session_state["events_data"] = latest_events
-                            st.session_state["votes_data"] = latest_votes_file
-                            st.success(f"'{user}' umbenannt!")
-                            st.rerun()
+                    if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
+                        st.session_state["events_data"] = latest_events
+                        st.session_state["votes_data"] = latest_votes_file
+                        st.success(f"'{user}' umbenannt!")
+                        st.rerun()
 
-            with col_btn_del:
-                if st.button("🗑️", key=f"delete_btn_{user}", help=f"Nutzer '{user}' löschen"):
-                    latest_events = load_json_file("events.json", {"events": []})
-                    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
+        with col_btn_del:
+            if st.button("🗑️", key=f"delete_btn_{user}", help=f"Nutzer '{user}' löschen"):
+                latest_events = load_json_file("events.json", {"events": []})
+                latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
 
-                    if len(latest_votes_file["users"]) > 1:
-                        latest_votes_file["users"].remove(user)
-                        votes_map_temp = latest_votes_file.get("votes", {})
-                        for ev_id, p_dict in votes_map_temp.items():
-                            if isinstance(p_dict, dict):
-                                p_dict.pop(user, None)
-                        latest_votes_file["votes"] = votes_map_temp
+                if len(latest_votes_file["users"]) > 1:
+                    latest_votes_file["users"].remove(user)
+                    votes_map_temp = latest_votes_file.get("votes", {})
+                    for ev_id, p_dict in votes_map_temp.items():
+                        if isinstance(p_dict, dict):
+                            p_dict.pop(user, None)
+                    latest_votes_file["votes"] = votes_map_temp
 
-                        if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
-                            st.session_state["events_data"] = latest_events
-                            st.session_state["votes_data"] = latest_votes_file
-                            st.success(f"Nutzer '{user}' gelöscht!")
-                            st.rerun()
+                    if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
+                        st.session_state["events_data"] = latest_events
+                        st.session_state["votes_data"] = latest_votes_file
+                        st.success(f"Nutzer '{user}' gelöscht!")
+                        st.rerun()
