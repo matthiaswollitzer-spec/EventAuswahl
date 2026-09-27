@@ -583,23 +583,29 @@ elif selected_tab == "➕ Neues Event":
     else:
         st.subheader("Event hinzufügen")
 
-    uploader_key = st.session_state.get("uploader_key", "flyer_uploader_0")
+    # 1. BILD-UPLOAD ODER BESTEHENDES BILD ANZEIGEN
+    has_image = bool(st.session_state.get("form_flyer_b64"))
 
-    # 1. BILD HOCHLADEN
-    uploaded_flyer = st.file_uploader("Flyer / Event-Bild auswählen", type=["jpg", "jpeg", "png"], key=uploader_key)
-    
-    # Sobald eine Datei ausgewählt wird, wandert das Bild sofort in den Session State
-    if uploaded_flyer is not None:
-        file_bytes = uploaded_flyer.read()
-        try:
-            img = PIL.Image.open(io.BytesIO(file_bytes))
-            b64_img = image_to_base64(img)
-            st.session_state["form_flyer_b64"] = b64_img
-            st.session_state["last_uploaded_bytes"] = file_bytes
-        except Exception as e:
-            st.error(f"Fehler beim Laden des Bildes: {e}")
+    # Wenn noch kein Bild geladen wurde, Upload-Feld anzeigen
+    if not has_image:
+        uploaded_flyer = st.file_uploader(
+            "Flyer / Event-Bild auswählen", 
+            type=["jpg", "jpeg", "png"], 
+            key="static_flyer_uploader"  # Fester Key für Stabilität bei Android-Reconnects
+        )
+        
+        if uploaded_flyer is not None:
+            file_bytes = uploaded_flyer.read()
+            try:
+                img = PIL.Image.open(io.BytesIO(file_bytes))
+                b64_img = image_to_base64(img)
+                st.session_state["form_flyer_b64"] = b64_img
+                st.session_state["last_uploaded_bytes"] = file_bytes
+                st.rerun()  # Sofort neu laden, um das Bild sicher im Session State anzuzeigen
+            except Exception as e:
+                st.error(f"Fehler beim Laden des Bildes: {e}")
 
-    # 2. ANZEIGE DES BILDES & UNABHÄNGIGER KI-KNOPF
+    # 2. BILD ANZEIGEN & KI-ANALYSE (Wenn Bild im Session State existiert)
     if st.session_state.get("form_flyer_b64"):
         st.write("**Vorschau des Event-Bildes:**")
         try:
@@ -627,11 +633,11 @@ elif selected_tab == "➕ Neues Event":
                             if ai_data.get("description"):
                                 st.session_state["form_description"] = ai_data["description"]
                             
-                            st.success("✅ Daten erfolgreich extrahiert! Bitte erstelle oder wähle unten aus.")
+                            st.success("✅ Daten erfolgreich extrahiert! Bitte unten überprüfen.")
                             st.rerun()
 
             with btn_col2:
-                if st.button("❌ Bild entfernen", key="btn_remove_flyer_img"):
+                if st.button("🗑️ Bild entfernen", key="btn_remove_flyer_img"):
                     st.session_state.pop("form_flyer_b64", None)
                     st.session_state.pop("last_uploaded_bytes", None)
                     st.rerun()
@@ -642,7 +648,7 @@ elif selected_tab == "➕ Neues Event":
     st.write("### Event-Daten eingeben")
 
     # 3. FORMULAR FÜR DIE TEXTFELDER
-    with st.form("event_input_form", clear_on_submit=True):
+    with st.form("event_input_form", clear_on_submit=False):
         f_title = st.text_input("Titel*", value=st.session_state.get("form_title", ""))
         
         col_d, col_t = st.columns(2)
@@ -670,7 +676,6 @@ elif selected_tab == "➕ Neues Event":
             elif is_duplicate_event(latest_events.get("events", []), f_title, str(f_date), current_event_id=edit_id):
                 st.error(f"⚠️ Ein Event mit dem Namen '{f_title}' existiert bereits am {f_date}!")
             else:
-                # Bild wird unabhängig vom KI-Erfolg aus dem Session State übernommen
                 b64_img = st.session_state.get("form_flyer_b64", "")
 
                 creator = st.session_state.get("current_user", "Anonym")
@@ -680,7 +685,6 @@ elif selected_tab == "➕ Neues Event":
                 target_tab_name = get_target_tab_name(f_date)
 
                 if is_editing and edit_id:
-                    # BESTEHENDES EVENT AKTUALISIEREN
                     for ev in latest_events.get("events", []):
                         if ev.get("id") == edit_id:
                             ev["title"] = f_title
@@ -690,10 +694,8 @@ elif selected_tab == "➕ Neues Event":
                             ev["description"] = f_desc
                             ev["flyer_b64"] = b64_img
                             break
-                    
                     st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich aktualisiert!"
                 else:
-                    # NEUES EVENT NEU ANLEGEN
                     new_event_id = str(datetime.datetime.now().timestamp())
                     new_event = {
                         "id": new_event_id,
@@ -706,15 +708,13 @@ elif selected_tab == "➕ Neues Event":
                         "flyer_b64": b64_img
                     }
                     latest_events["events"].append(new_event)
-
-                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich freigegeben!"
+                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich erstellt!"
 
                 if save_json_file_with_lock("events.json", latest_events):
                     st.session_state["events_data"] = latest_events
                     for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes"]:
                         st.session_state.pop(key, None)
 
-                    st.session_state["uploader_key"] = f"flyer_uploader_{datetime.datetime.now().timestamp()}"
                     st.session_state["next_tab"] = target_tab_name
                     st.rerun()
 
