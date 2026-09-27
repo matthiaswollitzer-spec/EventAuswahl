@@ -207,7 +207,13 @@ def analyze_flyer_with_gemini(image_bytes):
             }]
         }
 
-        res = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
+        res = requests.post(
+            url, 
+            json=payload, 
+            headers={"Content-Type": "application/json"},
+            timeout=15
+        )
+        
         if res.status_code == 200:
             text = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
             if text.startswith("```json"):
@@ -215,9 +221,16 @@ def analyze_flyer_with_gemini(image_bytes):
             if text.endswith("```"):
                 text = text[:-3]
             return json.loads(text.strip())
+        elif res.status_code in [429, 500, 503]:
+            st.warning("⚠️ Die KI ist gerade überlastet oder antwortet zu langsam. Bitte versuche es in wenigen Sekunden erneut.")
+            return None
         else:
             st.error(f"Gemini API Fehler ({res.status_code}): {res.text}")
             return None
+
+    except requests.exceptions.Timeout:
+        st.warning("⏱️ Zeitüberschreitung: Die KI hat nicht schnell genug geantwortet. Du kannst es noch einmal versuchen.")
+        return None
     except Exception as e:
         st.error(f"Fehler bei der KI-Analyse: {e}")
         return None
@@ -256,7 +269,6 @@ def is_duplicate_event(events, title, date_str, current_event_id=None):
     return False
 
 
-# CALLBACK: Wird VOR dem Zeichnen der Widgets ausgeführt
 def prepare_edit_event(ev, flyer_data):
     ev_id = ev.get("id")
     st.session_state["edit_event_id"] = ev_id
@@ -273,7 +285,7 @@ def prepare_edit_event(ev, flyer_data):
 
 
 def cancel_edit_mode():
-    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64"]:
+    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes"]:
         st.session_state.pop(key, None)
     st.session_state["active_tab"] = "📍 Aktuelle Woche"
 
@@ -362,7 +374,6 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
 
         if not is_preview:
             st.markdown("---")
-            # NORMALE ANPASSEN-SCHALTFLÄCHE MIT ON_CLICK CALLBACK
             st.button(
                 "✏️ Event anpassen",
                 key=f"edit_event_btn_{ev_id}",
@@ -486,7 +497,6 @@ tab_titles = ["📍 Aktuelle Woche", "🔮 Zukünftig", "📜 Vergangen", "➕ N
 if is_admin:
     tab_titles.append("⚙️ Admin")
 
-# Falls beim Speichern ein Wechsel angefordert wurde:
 if "next_tab" in st.session_state:
     st.session_state["active_tab"] = st.session_state.pop("next_tab")
 
@@ -575,40 +585,63 @@ elif selected_tab == "➕ Neues Event":
 
     uploader_key = st.session_state.get("uploader_key", "flyer_uploader_0")
 
-    uploaded_flyer = st.file_uploader("Flyer-Bild auswählen & analysieren", type=["jpg", "jpeg", "png"], key=uploader_key)
+    # 1. BILD HOCHLADEN
+    uploaded_flyer = st.file_uploader("Flyer / Event-Bild auswählen", type=["jpg", "jpeg", "png"], key=uploader_key)
     
-    if uploaded_flyer and st.button("🪄 Flyer mit KI analysieren"):
-        with st.spinner("Gemini analysiert das Flyer-Bild..."):
-            file_bytes = uploaded_flyer.read()
-            ai_data = analyze_flyer_with_gemini(file_bytes)
-            if ai_data:
-                img = PIL.Image.open(io.BytesIO(file_bytes))
-                b64_img = image_to_base64(img)
+    # Sobald eine Datei ausgewählt wird, wandert das Bild sofort in den Session State
+    if uploaded_flyer is not None:
+        file_bytes = uploaded_flyer.read()
+        try:
+            img = PIL.Image.open(io.BytesIO(file_bytes))
+            b64_img = image_to_base64(img)
+            st.session_state["form_flyer_b64"] = b64_img
+            st.session_state["last_uploaded_bytes"] = file_bytes
+        except Exception as e:
+            st.error(f"Fehler beim Laden des Bildes: {e}")
 
-                st.session_state["form_title"] = ai_data.get("title", "")
-                st.session_state["form_date"] = ai_data.get("date", str(datetime.date.today()))
-                st.session_state["form_time"] = ai_data.get("time", "19:00")
-                st.session_state["form_location"] = ai_data.get("location", "")
-                st.session_state["form_description"] = ai_data.get("description", "")
-                st.session_state["form_flyer_b64"] = b64_img
+    # 2. ANZEIGE DES BILDES & UNABHÄNGIGER KI-KNOPF
+    if st.session_state.get("form_flyer_b64"):
+        st.write("**Vorschau des Event-Bildes:**")
+        try:
+            prev_img = base64.b64decode(st.session_state["form_flyer_b64"])
+            st.image(prev_img, width=300)
+            
+            btn_col1, btn_col2 = st.columns([2, 1])
+            with btn_col1:
+                if st.button("🪄 Felddaten mit KI aus Flyer ausfüllen", key="btn_run_ai_analysis"):
+                    img_bytes_for_ai = st.session_state.get("last_uploaded_bytes")
+                    if not img_bytes_for_ai:
+                        img_bytes_for_ai = base64.b64decode(st.session_state["form_flyer_b64"])
+                    
+                    with st.spinner("Gemini analysiert den Flyer..."):
+                        ai_data = analyze_flyer_with_gemini(img_bytes_for_ai)
+                        if ai_data:
+                            if ai_data.get("title"):
+                                st.session_state["form_title"] = ai_data["title"]
+                            if ai_data.get("date"):
+                                st.session_state["form_date"] = ai_data["date"]
+                            if ai_data.get("time"):
+                                st.session_state["form_time"] = ai_data["time"]
+                            if ai_data.get("location"):
+                                st.session_state["form_location"] = ai_data["location"]
+                            if ai_data.get("description"):
+                                st.session_state["form_description"] = ai_data["description"]
+                            
+                            st.success("✅ Daten erfolgreich extrahiert! Bitte erstelle oder wähle unten aus.")
+                            st.rerun()
 
-                st.success("Daten und Bild aus dem Flyer extrahiert!")
-                st.rerun()
+            with btn_col2:
+                if st.button("❌ Bild entfernen", key="btn_remove_flyer_img"):
+                    st.session_state.pop("form_flyer_b64", None)
+                    st.session_state.pop("last_uploaded_bytes", None)
+                    st.rerun()
+        except Exception:
+            st.caption("⚠️ Bild konnte nicht angezeigt werden.")
 
     st.markdown("---")
     st.write("### Event-Daten eingeben")
 
-    if st.session_state.get("form_flyer_b64"):
-        st.write("**Aktuelles / Übernommenes Flyer-Bild:**")
-        try:
-            prev_img = base64.b64decode(st.session_state["form_flyer_b64"])
-            st.image(prev_img, width=250)
-            if st.button("❌ Bild entfernen"):
-                st.session_state.pop("form_flyer_b64", None)
-                st.rerun()
-        except Exception:
-            pass
-
+    # 3. FORMULAR FÜR DIE TEXTFELDER
     with st.form("event_input_form", clear_on_submit=True):
         f_title = st.text_input("Titel*", value=st.session_state.get("form_title", ""))
         
@@ -625,7 +658,6 @@ elif selected_tab == "➕ Neues Event":
 
         f_loc = st.text_input("Ort / Location", value=st.session_state.get("form_location", ""))
         f_desc = st.text_area("Beschreibung", value=st.session_state.get("form_description", ""))
-        f_file = st.file_uploader("Neues Bild hochladen (optional)", type=["jpg", "jpeg", "png"])
 
         submit_btn_label = "🔄 Event aktualisieren" if is_editing else "💾 Event speichern"
 
@@ -638,12 +670,8 @@ elif selected_tab == "➕ Neues Event":
             elif is_duplicate_event(latest_events.get("events", []), f_title, str(f_date), current_event_id=edit_id):
                 st.error(f"⚠️ Ein Event mit dem Namen '{f_title}' existiert bereits am {f_date}!")
             else:
-                b64_img = ""
-                if f_file:
-                    img = PIL.Image.open(f_file)
-                    b64_img = image_to_base64(img)
-                elif st.session_state.get("form_flyer_b64"):
-                    b64_img = st.session_state.get("form_flyer_b64")
+                # Bild wird unabhängig vom KI-Erfolg aus dem Session State übernommen
+                b64_img = st.session_state.get("form_flyer_b64", "")
 
                 creator = st.session_state.get("current_user", "Anonym")
                 if creator == NO_USER_SELECTED:
@@ -683,11 +711,10 @@ elif selected_tab == "➕ Neues Event":
 
                 if save_json_file_with_lock("events.json", latest_events):
                     st.session_state["events_data"] = latest_events
-                    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64"]:
+                    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes"]:
                         st.session_state.pop(key, None)
 
                     st.session_state["uploader_key"] = f"flyer_uploader_{datetime.datetime.now().timestamp()}"
-                    # NÄCHSTEN TAB SICHER FÜR DEN NÄCHSTEN LAUF VORMERKEN
                     st.session_state["next_tab"] = target_tab_name
                     st.rerun()
 
