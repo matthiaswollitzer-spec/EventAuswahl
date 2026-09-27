@@ -257,7 +257,7 @@ def is_duplicate_event(events, title, date_str, current_event_id=None):
 
 
 # ---------------------------------------------------------
-# 4. SINGLE EVENT CARD RENDERER (MIT "VIELLEICHT"-SUPPORT)
+# 4. SINGLE EVENT CARD RENDERER
 # ---------------------------------------------------------
 def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
     ev_id = ev.get("id", "preview_id")
@@ -276,12 +276,12 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
     # 2. ZUSAGEN / VIELLEICHT DROPDOWN
     event_votes = votes_dict.get(ev_id, {})
     
-    # Kompatibilität für alte votes.json (falls dort noch eine einfache Liste steht)
+    # Kompatibilität für alte votes.json
     if isinstance(event_votes, list):
         event_votes = {user: "yes" for user in event_votes}
 
-    yes_list = [user for user, status in event_votes.items() if status == "yes"]
-    maybe_list = [user for user, status in event_votes.items() if status == "maybe"]
+    yes_list = sorted([user for user, status in event_votes.items() if status == "yes"], key=str.lower)
+    maybe_list = sorted([user for user, status in event_votes.items() if status == "maybe"], key=str.lower)
 
     current_user = st.session_state.get("current_user")
     has_user = current_user and current_user != "-- Bitte wählen --"
@@ -365,7 +365,7 @@ def update_vote_status(ev_id, current_user, new_status, has_user):
     votes_map = latest_votes_file.get("votes", {})
     
     event_votes = votes_map.get(ev_id, {})
-    if isinstance(event_votes, list):  # Migration alter Daten
+    if isinstance(event_votes, list):
         event_votes = {u: "yes" for u in event_votes}
 
     if new_status == "none":
@@ -382,7 +382,7 @@ def update_vote_status(ev_id, current_user, new_status, has_user):
 
 
 # ---------------------------------------------------------
-# 5. INITIALISIERUNG & REST DES CODES (Unverändert)
+# 5. INITIALISIERUNG
 # ---------------------------------------------------------
 if "events_data" not in st.session_state or "votes_data" not in st.session_state:
     events_d, vo_d = load_all_data()
@@ -392,6 +392,7 @@ if "events_data" not in st.session_state or "votes_data" not in st.session_state
 events_data = st.session_state["events_data"]
 votes_data = st.session_state["votes_data"]
 votes_map = votes_data.get("votes", {})
+
 
 # ---------------------------------------------------------
 # 6. SIDEBAR & HEADER
@@ -411,8 +412,11 @@ with st.sidebar:
 st.title("📅 Event Planner")
 
 NO_USER_SELECTED = "-- Bitte wählen --"
-user_list = votes_data.get("users", [])
-user_options = [NO_USER_SELECTED] + user_list
+
+# Namen alphabetisch sortieren
+raw_user_list = votes_data.get("users", [])
+sorted_user_list = sorted(raw_user_list, key=str.lower)
+user_options = [NO_USER_SELECTED] + sorted_user_list
 
 current_selection = st.session_state.get("current_user", NO_USER_SELECTED)
 if current_selection not in user_options:
@@ -438,6 +442,7 @@ with col_reload_btn:
         st.rerun()
 
 st.markdown("---")
+
 
 # ---------------------------------------------------------
 # 7. TABS
@@ -507,6 +512,7 @@ with tab_future:
 
 with tab_past:
     render_event_list(past_events, empty_msg="Keine vergangenen Events vorhanden.")
+
 
 # ---------------------------------------------------------
 # TAB 4: NEUES EVENT ERSTELLEN
@@ -617,6 +623,7 @@ with tab_add:
                     
                     st.rerun()
 
+
 # ---------------------------------------------------------
 # TAB 5: ADMIN BEREICH
 # ---------------------------------------------------------
@@ -638,6 +645,8 @@ if is_admin and tab_admin:
                     latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
                     if clean_name not in latest_votes_file["users"]:
                         latest_votes_file["users"].append(clean_name)
+                        latest_votes_file["users"].sort(key=str.lower)
+                        
                         if save_json_file_with_lock("votes.json", latest_votes_file):
                             st.session_state["votes_data"] = latest_votes_file
                             st.success(f"Nutzer '{clean_name}' hinzugefügt!")
@@ -647,7 +656,10 @@ if is_admin and tab_admin:
                 else:
                     st.warning("Bitte gib einen Namen ein.")
 
-        for user in votes_data["users"]:
+        # Alphabetisch sortiert im Admin-Bereich anzeigen
+        sorted_admin_users = sorted(votes_data["users"], key=str.lower)
+
+        for user in sorted_admin_users:
             col_name, col_rename_input, col_btn_rename, col_btn_del = st.columns([2, 2, 1, 1])
 
             with col_name:
@@ -665,6 +677,7 @@ if is_admin and tab_admin:
                     if clean_new_name and clean_new_name not in latest_votes_file["users"]:
                         user_index = latest_votes_file["users"].index(user)
                         latest_votes_file["users"][user_index] = clean_new_name
+                        latest_votes_file["users"].sort(key=str.lower)
 
                         for ev in latest_events.get("events", []):
                             if ev.get("created_by") == user:
