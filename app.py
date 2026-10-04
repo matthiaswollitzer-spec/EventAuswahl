@@ -218,7 +218,7 @@ def analyze_flyer_with_gemini(image_bytes):
 
     try:
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
 
         prompt = """
         Analysiere diesen Event-Flyer und extrahiere die folgenden Informationen als JSON:
