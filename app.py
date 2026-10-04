@@ -2,21 +2,16 @@ import base64
 import datetime
 import io
 import json
-import random
-import time
 import requests
 import PIL.Image
 import streamlit as st
-
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaInMemoryUpload, MediaIoBaseDownload
+from supabase import create_client, Client
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIGURATION & CUSTOM CSS
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Event Planner",
+    page_title="Event-Planer",
     page_icon="📅",
     layout="centered",
     initial_sidebar_state="collapsed"
@@ -28,6 +23,7 @@ st.markdown("""
         max-width: 800px;
         margin: 0 auto;
     }
+
     .date-header {
         display: flex;
         align-items: center;
@@ -52,120 +48,159 @@ st.markdown("""
         width: 100%;
         border-radius: 8px;
     }
+
+    /* HAUPTÜBERSCHRIFT */
+    .main-title {
+        font-size: 1.6rem;
+        font-weight: 700;
+        margin-top: 5px;
+        margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    /* CLIENT-SIDE FLYER-ZOOM OHNE NEULADEN */
+    .flyer-toggle {
+        display: none;
+    }
+    .flyer-container .flyer-full {
+        display: none;
+    }
+    .flyer-container .flyer-thumb {
+        width: 120px;
+        max-width: 100%;
+        border-radius: 8px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        cursor: pointer;
+        display: block;
+        transition: transform 0.15s ease-in-out;
+    }
+    .flyer-container .flyer-hint {
+        font-size: 0.78em;
+        color: #666;
+        font-weight: 500;
+        display: block;
+        margin-top: 4px;
+        margin-bottom: 8px;
+    }
+    .flyer-toggle:checked + .flyer-container .flyer-thumb,
+    .flyer-toggle:checked + .flyer-container .flyer-hint {
+        display: none !important;
+    }
+    .flyer-toggle:checked + .flyer-container .flyer-full {
+        display: block !important;
+        width: 100%;
+        max-width: 100%;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        cursor: pointer;
+        margin-bottom: 12px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------
-# 2. GOOGLE DRIVE PERSISTENCE & LOCKING
+# 2. SUPABASE CONNECTION & DATABASE HELPERS
 # ---------------------------------------------------------
-def get_drive_service():
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return build('drive', 'v3', credentials=creds)
+supabase = init_supabase()
 
 
-def acquire_lock(service, folder_id, lock_filename, max_retries=5):
-    for _ in range(max_retries):
-        query = f"'{folder_id}' in parents and name = '{lock_filename}' and trashed = false"
-        results = service.files().list(q=query, fields="files(id)").execute()
-        files = results.get('files', [])
-
-        if not files:
-            try:
-                file_metadata = {'name': lock_filename, 'parents': [folder_id]}
-                service.files().create(body=file_metadata).execute()
-                return True
-            except Exception:
-                pass
-        time.sleep(random.uniform(0.2, 0.5))
-    return False
-
-
-def release_lock(service, folder_id, lock_filename):
+def cleanup_old_events():
+    """Löscht automatisch Events aus Supabase, deren Datum älter als 7 Tage ist (inklusive dazugehöriger Votes)."""
     try:
-        query = f"'{folder_id}' in parents and name = '{lock_filename}' and trashed = false"
-        results = service.files().list(q=query, fields="files(id)").execute()
-        files = results.get('files', [])
-        for f in files:
-            service.files().delete(fileId=f['id']).execute()
+        cutoff_date = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+        
+        old_events = supabase.table("events").select("id").lt("date", cutoff_date).execute()
+        if old_events.data:
+            old_ids = [ev["id"] for ev in old_events.data]
+            for ev_id in old_ids:
+                supabase.table("votes").delete().eq("event_id", ev_id).execute()
+            supabase.table("events").delete().in_("id", old_ids).execute()
     except Exception:
         pass
 
 
-def load_json_file(filename, default_value):
+def load_users_db():
+    """Lädt die Namensliste aus der Supabase 'users'-Tabelle."""
+    default_names = ["Anna", "Ben", "Christian", "Daniela", "Julian", "Laura", "Max", "Sarah", "Stefan"]
     try:
-        service = get_drive_service()
-        folder_id = st.secrets["DRIVE_FOLDER_ID"]
-
-        query = f"'{folder_id}' in parents and name = '{filename}' and trashed = false"
-        results = service.files().list(q=query, fields="files(id)").execute()
-        files = results.get('files', [])
-
-        if not files:
-            return default_value
-
-        file_id = files[0]['id']
-        request = service.files().get_media(fileId=file_id)
-        file_stream = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_stream, request)
-
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-
-        file_stream.seek(0)
-        return json.loads(file_stream.read().decode('utf-8'))
-    except Exception as e:
-        st.error(f"Fehler beim Laden von {filename}: {e}")
-        return default_value
-
-
-def save_json_file_with_lock(filename, data_content):
-    service = get_drive_service()
-    folder_id = st.secrets["DRIVE_FOLDER_ID"]
-    lock_filename = f"{filename}.lock"
-
-    if acquire_lock(service, folder_id, lock_filename):
-        try:
-            json_bytes = json.dumps(data_content, ensure_ascii=False, indent=2).encode('utf-8')
-            media = MediaInMemoryUpload(json_bytes, mimetype='application/json', resumable=True)
-
-            query = f"'{folder_id}' in parents and name = '{filename}' and trashed = false"
-            results = service.files().list(q=query, fields="files(id)").execute()
-            files = results.get('files', [])
-
-            if files:
-                file_id = files[0]['id']
-                service.files().update(fileId=file_id, media_body=media).execute()
-            else:
-                file_metadata = {'name': filename, 'parents': [folder_id]}
-                service.files().create(body=file_metadata, media_body=media).execute()
-            return True
-        except Exception as e:
-            st.error(f"Fehler beim Speichern von {filename}: {e}")
-            return False
-        finally:
-            release_lock(service, folder_id, lock_filename)
-    else:
-        st.error("⚠️ Server beschäftigt. Die Datei wird gerade bearbeitet, bitte versuche es erneut.")
-        return False
+        res = supabase.table("users").select("name").order("name").execute()
+        if res.data and len(res.data) > 0:
+            return [r["name"] for r in res.data if r.get("name")]
+        else:
+            for name in default_names:
+                supabase.table("users").upsert({"name": name}).execute()
+            return default_names
+    except Exception:
+        return default_names
 
 
 def load_all_data():
-    events_data = load_json_file("events.json", {"events": []})
-    votes_data = load_json_file("votes.json", {"users": ["Anna", "Julian", "Matthias"], "votes": {}})
-    return events_data, votes_data
+    try:
+        cleanup_old_events()
+
+        events_res = supabase.table("events").select("*").execute()
+        votes_res = supabase.table("votes").select("*").execute()
+        
+        events = events_res.data if events_res.data else []
+        
+        votes_map = {}
+        for v in (votes_res.data if votes_res.data else []):
+            ev_id = v["event_id"]
+            if ev_id not in votes_map:
+                votes_map[ev_id] = {}
+            votes_map[ev_id][v["user_name"]] = v["vote_status"]
+            
+        return events, votes_map
+    except Exception as e:
+        st.error(f"Fehler beim Laden aus Supabase: {e}")
+        return [], {}
+
+
+def update_vote_status_db(ev_id, user_name, new_status):
+    if not user_name or user_name.strip() == "" or user_name == "-- Bitte wählen --":
+        st.warning("⚠️ Bitte wähle oben deinen Namen aus, um einzutragen!")
+        return
+
+    clean_user = user_name.strip()
+    try:
+        if new_status == "none":
+            supabase.table("votes").delete().eq("event_id", ev_id).eq("user_name", clean_user).execute()
+        else:
+            supabase.table("votes").upsert(
+                {
+                    "event_id": ev_id,
+                    "user_name": clean_user,
+                    "vote_status": new_status,
+                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                },
+                on_conflict="event_id,user_name"
+            ).execute()
+            
+        st.rerun()
+    except Exception as e:
+        st.error(f"Fehler beim Speichern der Stimme: {e}")
+
+
+def delete_event_completely(ev_id):
+    """Löscht ein Event und alle zugehörigen Votes."""
+    try:
+        supabase.table("votes").delete().eq("event_id", ev_id).execute()
+        supabase.table("events").delete().eq("id", ev_id).execute()
+    except Exception as e:
+        st.error(f"Fehler beim Löschen des Events: {e}")
 
 
 # ---------------------------------------------------------
-# 3. HELPER FUNCTIONS & CALLBACKS
+# 3. HELPER FUNCTIONS & GEMINI ANALYSIS
 # ---------------------------------------------------------
 def image_to_base64(image):
     if image.mode in ("RGBA", "P"):
@@ -183,7 +218,7 @@ def analyze_flyer_with_gemini(image_bytes):
 
     try:
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
 
         prompt = """
         Analysiere diesen Event-Flyer und extrahiere die folgenden Informationen als JSON:
@@ -207,12 +242,7 @@ def analyze_flyer_with_gemini(image_bytes):
             }]
         }
 
-        res = requests.post(
-            url, 
-            json=payload, 
-            headers={"Content-Type": "application/json"},
-            timeout=15
-        )
+        res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
         
         if res.status_code == 200:
             text = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
@@ -222,15 +252,12 @@ def analyze_flyer_with_gemini(image_bytes):
                 text = text[:-3]
             return json.loads(text.strip())
         elif res.status_code in [429, 500, 503]:
-            st.warning("⚠️ Die KI ist gerade überlastet oder antwortet zu langsam. Bitte versuche es in wenigen Sekunden erneut.")
+            st.warning("⚠️ Die KI ist gerade überlastet. Bitte erneut versuchen.")
             return None
         else:
             st.error(f"Gemini API Fehler ({res.status_code}): {res.text}")
             return None
 
-    except requests.exceptions.Timeout:
-        st.warning("⏱️ Zeitüberschreitung: Die KI hat nicht schnell genug geantwortet. Du kannst es noch einmal versuchen.")
-        return None
     except Exception as e:
         st.error(f"Fehler bei der KI-Analyse: {e}")
         return None
@@ -270,8 +297,7 @@ def is_duplicate_event(events, title, date_str, current_event_id=None):
 
 
 def prepare_edit_event(ev, flyer_data):
-    ev_id = ev.get("id")
-    st.session_state["edit_event_id"] = ev_id
+    st.session_state["edit_event_id"] = ev.get("id")
     st.session_state["form_title"] = ev.get("title", "")
     st.session_state["form_date"] = ev.get("date", str(datetime.date.today()))
     st.session_state["form_time"] = ev.get("time", "19:00")
@@ -285,7 +311,7 @@ def prepare_edit_event(ev, flyer_data):
 
 
 def cancel_edit_mode():
-    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes"]:
+    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes", "last_uploaded_name"]:
         st.session_state.pop(key, None)
     st.session_state["active_tab"] = "📍 Aktuelle Woche"
 
@@ -293,36 +319,50 @@ def cancel_edit_mode():
 # ---------------------------------------------------------
 # 4. SINGLE EVENT CARD RENDERER
 # ---------------------------------------------------------
-def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
-    ev_id = ev.get("id", "preview_id")
+def render_single_event_card(ev, votes_dict, is_admin=False):
+    ev_id = ev.get("id")
 
-    # 1. BILD
-    flyer_data = ev.get("flyer_b64") or ev.get("image_b64")
+    # 1. BILD (DIRECT SWAP: VORSCHAU <-> GROSSER FLYER PER CLICK)
+    flyer_data = ev.get("flyer_b64")
     if flyer_data:
         try:
             if "," in flyer_data:
                 flyer_data = flyer_data.split(",")[1]
-            img_bytes = base64.b64decode(flyer_data)
-            st.image(img_bytes, use_container_width=True)
+
+            st.markdown(
+                f"""
+                <div style="margin-bottom: 12px;">
+                    <input type="checkbox" id="flyer-zoom-{ev_id}" class="flyer-toggle">
+                    <label for="flyer-zoom-{ev_id}" class="flyer-container" style="display: block; cursor: pointer;">
+                        <img src="data:image/jpeg;base64,{flyer_data}" class="flyer-thumb">
+                        <span class="flyer-hint">🔍 Flyer tippen zum Vergrößern</span>
+                        <img src="data:image/jpeg;base64,{flyer_data}" class="flyer-full">
+                    </label>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
         except Exception:
             st.caption("⚠️ Bild konnte nicht angezeigt werden.")
 
-    # 2. ZUSAGEN / VIELLEICHT DROPDOWN
+    # 2. ZUSAGEN / VIELLEICHT DROPDOWN (COMBOBOX)
     event_votes = votes_dict.get(ev_id, {})
     
-    if isinstance(event_votes, list):
-        event_votes = {user: "yes" for user in event_votes}
-
     yes_list = sorted([user for user, status in event_votes.items() if status == "yes"], key=str.lower)
     maybe_list = sorted([user for user, status in event_votes.items() if status == "maybe"], key=str.lower)
 
-    current_user = st.session_state.get("current_user")
-    has_user = current_user and current_user != "-- Bitte wählen --"
-    user_status = event_votes.get(current_user, "none") if has_user else "none"
+    current_user = st.session_state.get("current_user", "").strip()
+    user_status = event_votes.get(current_user, "none") if current_user else "none"
 
-    expander_title = f"👥 Rückmeldungen: {len(yes_list)} Zusagen"
-    if maybe_list:
-        expander_title += f", {len(maybe_list)} Vielleicht"
+    vote_count = len(yes_list) + len(maybe_list)
+    has_votes = vote_count > 0
+
+    if has_votes:
+        expander_title = f"🟢 Rückmeldungen: {len(yes_list)} Zusagen"
+        if maybe_list:
+            expander_title += f", {len(maybe_list)} Vielleicht"
+    else:
+        expander_title = f"👥 Rückmeldungen: 0 Rückmeldungen"
 
     with st.expander(expander_title, expanded=False):
         col_yes, col_maybe = st.columns(2)
@@ -342,29 +382,30 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
             else:
                 st.caption("Keine Unsicheren")
 
-        if not is_preview:
-            st.markdown("---")
-            st.write("**Deine Rückmeldung:**")
-            
-            btn_col1, btn_col2, btn_col3 = st.columns(3)
-            
-            with btn_col1:
-                btn_yes_type = "primary" if user_status == "yes" else "secondary"
-                if st.button("✅ Zusage", key=f"vote_yes_{ev_id}", type=btn_yes_type):
-                    update_vote_status(ev_id, current_user, "yes", has_user)
+        st.markdown("---")
+        st.write("**Deine Rückmeldung:**")
+        
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
+        
+        with btn_col1:
+            btn_yes_type = "primary" if user_status == "yes" else "secondary"
+            if st.button("✅ Zusage", key=f"vote_yes_{ev_id}", type=btn_yes_type):
+                update_vote_status_db(ev_id, current_user, "yes")
 
-            with btn_col2:
-                btn_maybe_type = "primary" if user_status == "maybe" else "secondary"
-                if st.button("❓ Vielleicht", key=f"vote_maybe_{ev_id}", type=btn_maybe_type):
-                    update_vote_status(ev_id, current_user, "maybe", has_user)
+        with btn_col2:
+            btn_maybe_type = "primary" if user_status == "maybe" else "secondary"
+            if st.button("❓ Vielleicht", key=f"vote_maybe_{ev_id}", type=btn_maybe_type):
+                update_vote_status_db(ev_id, current_user, "maybe")
 
-            with btn_col3:
-                if st.button("❌ Absagen", key=f"vote_no_{ev_id}"):
-                    update_vote_status(ev_id, current_user, "none", has_user)
+        with btn_col3:
+            if st.button("❌ Absagen", key=f"vote_no_{ev_id}"):
+                update_vote_status_db(ev_id, current_user, "none")
 
     # 3. DETAILS DROPDOWN
     title_text = ev.get('title', 'Unbenanntes Event')
-    with st.expander(f"📌 {title_text} - Details (Uhrzeit, Ort, Beschreibung)", expanded=False):
+    details_title = f"📌 {title_text} - Details (Uhrzeit, Ort, Beschreibung)"
+    
+    with st.expander(details_title, expanded=False):
         st.write(f"📅 **Datum:** {ev.get('date', 'N/A')}")
         st.write(f"⏰ **Uhrzeit:** {ev.get('time', 'N/A')}")
         st.write(f"📍 **Ort:** {ev.get('location', 'N/A')}")
@@ -372,72 +413,31 @@ def render_single_event_card(ev, votes_dict, is_preview=False, is_admin=False):
             st.write(f"💬 **Beschreibung:** {ev.get('description')}")
         st.caption(f"Erstellt von: {ev.get('created_by', 'Anonym')}")
 
-        if not is_preview:
-            st.markdown("---")
-            st.button(
-                "✏️ Event anpassen",
-                key=f"edit_event_btn_{ev_id}",
-                on_click=prepare_edit_event,
-                args=(ev, flyer_data)
-            )
+        st.markdown("---")
+        st.button(
+            "✏️ Event anpassen",
+            key=f"edit_event_btn_{ev_id}",
+            on_click=prepare_edit_event,
+            args=(ev, flyer_data)
+        )
 
     # LÖSCHEN (ADMIN)
-    if is_admin and not is_preview:
+    if is_admin:
         if st.button(f"🗑️ Event '{title_text}' löschen (Admin)", key=f"admin_del_direct_{ev_id}"):
-            latest_events = load_json_file("events.json", {"events": []})
-            latest_events["events"] = [e for e in latest_events.get("events", []) if e.get("id") != ev_id]
-
-            latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
-            if ev_id in latest_votes_file.get("votes", {}):
-                del latest_votes_file["votes"][ev_id]
-
-            if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
-                st.session_state["events_data"] = latest_events
-                st.session_state["votes_data"] = latest_votes_file
-                st.success("Event erfolgreich gelöscht.")
-                st.rerun()
-
-
-def update_vote_status(ev_id, current_user, new_status, has_user):
-    if not has_user:
-        st.warning("⚠️ Bitte wähle oben dein Profil aus, um abzustimmen!")
-        return
-
-    latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
-    votes_map = latest_votes_file.get("votes", {})
-    
-    event_votes = votes_map.get(ev_id, {})
-    if isinstance(event_votes, list):
-        event_votes = {u: "yes" for u in event_votes}
-
-    if new_status == "none":
-        event_votes.pop(current_user, None)
-    else:
-        event_votes[current_user] = new_status
-
-    votes_map[ev_id] = event_votes
-    latest_votes_file["votes"] = votes_map
-
-    if save_json_file_with_lock("votes.json", latest_votes_file):
-        st.session_state["votes_data"] = latest_votes_file
-        st.rerun()
+            delete_event_completely(ev_id)
+            st.success("Event und alle dazugehörigen Votes erfolgreich gelöscht.")
+            st.rerun()
 
 
 # ---------------------------------------------------------
-# 5. INITIALISIERUNG
+# 5. INITIALISIERUNG & DATEN LADEN
 # ---------------------------------------------------------
-if "events_data" not in st.session_state or "votes_data" not in st.session_state:
-    events_d, vo_d = load_all_data()
-    st.session_state["events_data"] = events_d
-    st.session_state["votes_data"] = vo_d
-
-events_data = st.session_state["events_data"]
-votes_data = st.session_state["votes_data"]
-votes_map = votes_data.get("votes", {})
+events_data, votes_map = load_all_data()
+db_users = load_users_db()
 
 
 # ---------------------------------------------------------
-# 6. SIDEBAR & HEADER
+# 6. SIDEBAR & REIHENFOLGE: TITEL -> USER-AUSWAHL -> REITER
 # ---------------------------------------------------------
 expected_pin = st.secrets.get("ADMIN_PIN", "#together#")
 
@@ -451,38 +451,23 @@ with st.sidebar:
     elif admin_pin_input != "":
         st.error("Falsche PIN")
 
-st.title("📅 Event Planner")
+# 1. Hauptüberschrift oben
+st.markdown('<div class="main-title">📅 Event-Planer</div>', unsafe_allow_html=True)
 
-NO_USER_SELECTED = "-- Bitte wählen --"
+# 2. User-Auswahl direkt darunter
+USER_NAMES = ["-- Bitte wählen --"] + db_users
 
-raw_user_list = votes_data.get("users", [])
-sorted_user_list = sorted(raw_user_list, key=str.lower)
-user_options = [NO_USER_SELECTED] + sorted_user_list
+if "current_user" not in st.session_state or st.session_state["current_user"] not in USER_NAMES:
+    st.session_state["current_user"] = USER_NAMES[0]
 
-current_selection = st.session_state.get("current_user", NO_USER_SELECTED)
-if current_selection not in user_options:
-    current_selection = NO_USER_SELECTED
+selected_user = st.selectbox(
+    "👤 Dein Name (für Abstimmungen):",
+    options=USER_NAMES,
+    index=USER_NAMES.index(st.session_state["current_user"])
+)
 
-col_user_select, col_reload_btn = st.columns([3, 1])
+st.session_state["current_user"] = "" if selected_user == "-- Bitte wählen --" else selected_user
 
-with col_user_select:
-    selected_user = st.selectbox(
-        "👤 Profil wählen (zum Abstimmen):", 
-        options=user_options, 
-        index=user_options.index(current_selection)
-    )
-    st.session_state["current_user"] = selected_user
-
-with col_reload_btn:
-    st.write("")
-    st.write("")
-    if st.button("🔄 Drive", help="Neu aus Google Drive laden"):
-        ev_d, vo_d = load_all_data()
-        st.session_state["events_data"] = ev_d
-        st.session_state["votes_data"] = vo_d
-        st.rerun()
-
-# ERFOLGSMELDUNG
 if "add_success_msg" in st.session_state:
     st.success(st.session_state["add_success_msg"])
     del st.session_state["add_success_msg"]
@@ -538,14 +523,14 @@ def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
         st.markdown(f'<div class="date-header">{formatted_date}</div>', unsafe_allow_html=True)
 
         for ev in day_events:
-            render_single_event_card(ev, votes_map, is_preview=False, is_admin=is_admin)
+            render_single_event_card(ev, votes_map, is_admin=is_admin)
 
 
 current_week_events = []
 future_events = []
 past_events = []
 
-for event in events_data.get("events", []):
+for event in events_data:
     d_str = event.get("date", "")
     try:
         ev_date = datetime.datetime.strptime(d_str, "%Y-%m-%d").date()
@@ -583,69 +568,61 @@ elif selected_tab == "➕ Neues Event":
     else:
         st.subheader("Event hinzufügen")
 
-    # 1. BILD-UPLOAD ODER BESTEHENDES BILD ANZEIGEN
+    # 1. BILD-UPLOAD (Löst automatische KI-Analyse direkt beim Auswählen aus)
     has_image = bool(st.session_state.get("form_flyer_b64"))
 
-    # Wenn noch kein Bild geladen wurde, Upload-Feld anzeigen
     if not has_image:
         uploaded_flyer = st.file_uploader(
-            "Flyer / Event-Bild auswählen", 
+            "Flyer / Event-Bild auswählen (wird sofort automatisch analysiert)", 
             type=["jpg", "jpeg", "png"], 
-            key="static_flyer_uploader"  # Fester Key für Stabilität bei Android-Reconnects
+            key="static_flyer_uploader"
         )
         
         if uploaded_flyer is not None:
-            file_bytes = uploaded_flyer.read()
-            try:
-                img = PIL.Image.open(io.BytesIO(file_bytes))
-                b64_img = image_to_base64(img)
-                st.session_state["form_flyer_b64"] = b64_img
+            if st.session_state.get("last_uploaded_name") != uploaded_flyer.name:
+                file_bytes = uploaded_flyer.read()
+                st.session_state["last_uploaded_name"] = uploaded_flyer.name
                 st.session_state["last_uploaded_bytes"] = file_bytes
-                st.rerun()  # Sofort neu laden, um das Bild sicher im Session State anzuzeigen
-            except Exception as e:
-                st.error(f"Fehler beim Laden des Bildes: {e}")
+                
+                try:
+                    img = PIL.Image.open(io.BytesIO(file_bytes))
+                    b64_img = image_to_base64(img)
+                    st.session_state["form_flyer_b64"] = b64_img
+                except Exception as e:
+                    st.error(f"Fehler beim Laden des Bildes: {e}")
 
-    # 2. BILD ANZEIGEN & KI-ANALYSE (Wenn Bild im Session State existiert)
+                with st.spinner("🤖 Gemini analysiert den Flyer automatisch..."):
+                    ai_data = analyze_flyer_with_gemini(file_bytes)
+                    if ai_data:
+                        if ai_data.get("title"):
+                            st.session_state["form_title"] = ai_data["title"]
+                        if ai_data.get("date"):
+                            st.session_state["form_date"] = ai_data["date"]
+                        if ai_data.get("time"):
+                            st.session_state["form_time"] = ai_data["time"]
+                        if ai_data.get("location"):
+                            st.session_state["form_location"] = ai_data["location"]
+                        if ai_data.get("description"):
+                            st.session_state["form_description"] = ai_data["description"]
+                st.rerun()
+
+    # 2. BILD ANZEIGEN & LÖSCHEN MÖGLICH MACHEN
     if st.session_state.get("form_flyer_b64"):
         st.write("**Vorschau des Event-Bildes:**")
         try:
             prev_img = base64.b64decode(st.session_state["form_flyer_b64"])
             st.image(prev_img, width=300)
             
-            btn_col1, btn_col2 = st.columns([2, 1])
-            with btn_col1:
-                if st.button("🪄 Felddaten mit KI aus Flyer ausfüllen", key="btn_run_ai_analysis"):
-                    img_bytes_for_ai = st.session_state.get("last_uploaded_bytes")
-                    if not img_bytes_for_ai:
-                        img_bytes_for_ai = base64.b64decode(st.session_state["form_flyer_b64"])
-                    
-                    with st.spinner("Gemini analysiert den Flyer..."):
-                        ai_data = analyze_flyer_with_gemini(img_bytes_for_ai)
-                        if ai_data:
-                            if ai_data.get("title"):
-                                st.session_state["form_title"] = ai_data["title"]
-                            if ai_data.get("date"):
-                                st.session_state["form_date"] = ai_data["date"]
-                            if ai_data.get("time"):
-                                st.session_state["form_time"] = ai_data["time"]
-                            if ai_data.get("location"):
-                                st.session_state["form_location"] = ai_data["location"]
-                            if ai_data.get("description"):
-                                st.session_state["form_description"] = ai_data["description"]
-                            
-                            st.success("✅ Daten erfolgreich extrahiert! Bitte unten überprüfen.")
-                            st.rerun()
-
-            with btn_col2:
-                if st.button("🗑️ Bild entfernen", key="btn_remove_flyer_img"):
-                    st.session_state.pop("form_flyer_b64", None)
-                    st.session_state.pop("last_uploaded_bytes", None)
-                    st.rerun()
+            if st.button("🗑️ Bild entfernen", key="btn_remove_flyer_img"):
+                st.session_state.pop("form_flyer_b64", None)
+                st.session_state.pop("last_uploaded_bytes", None)
+                st.session_state.pop("last_uploaded_name", None)
+                st.rerun()
         except Exception:
-            st.caption("⚠️ Bild konnte nicht angezeigt werden.")
+            st.caption("⚠ Bild konnte nicht angezeigt werden.")
 
     st.markdown("---")
-    st.write("### Event-Daten eingeben")
+    st.write("### Event-Daten")
 
     # 3. FORMULAR FÜR DIE TEXTFELDER
     with st.form("event_input_form", clear_on_submit=False):
@@ -668,36 +645,30 @@ elif selected_tab == "➕ Neues Event":
         submit_btn_label = "🔄 Event aktualisieren" if is_editing else "💾 Event speichern"
 
         if st.form_submit_button(submit_btn_label):
-            latest_events = load_json_file("events.json", {"events": []})
             edit_id = st.session_state.get("edit_event_id")
 
             if not f_title:
                 st.error("Bitte gib einen Titel ein.")
-            elif is_duplicate_event(latest_events.get("events", []), f_title, str(f_date), current_event_id=edit_id):
+            elif is_duplicate_event(events_data, f_title, str(f_date), current_event_id=edit_id):
                 st.error(f"⚠️ Ein Event mit dem Namen '{f_title}' existiert bereits am {f_date}!")
             else:
                 b64_img = st.session_state.get("form_flyer_b64", "")
-
-                creator = st.session_state.get("current_user", "Anonym")
-                if creator == NO_USER_SELECTED:
-                    creator = "Anonym"
-
+                creator = st.session_state.get("current_user") or "Anonym"
                 target_tab_name = get_target_tab_name(f_date)
 
                 if is_editing and edit_id:
-                    for ev in latest_events.get("events", []):
-                        if ev.get("id") == edit_id:
-                            ev["title"] = f_title
-                            ev["date"] = str(f_date)
-                            ev["time"] = f_time
-                            ev["location"] = f_loc
-                            ev["description"] = f_desc
-                            ev["flyer_b64"] = b64_img
-                            break
-                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich aktualisiert!"
+                    supabase.table("events").update({
+                        "title": f_title,
+                        "date": str(f_date),
+                        "time": f_time,
+                        "location": f_loc,
+                        "description": f_desc,
+                        "flyer_b64": b64_img
+                    }).eq("id", edit_id).execute()
+                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde aktualisiert!"
                 else:
                     new_event_id = str(datetime.datetime.now().timestamp())
-                    new_event = {
+                    supabase.table("events").insert({
                         "id": new_event_id,
                         "title": f_title,
                         "date": str(f_date),
@@ -706,102 +677,77 @@ elif selected_tab == "➕ Neues Event":
                         "description": f_desc,
                         "created_by": creator,
                         "flyer_b64": b64_img
-                    }
-                    latest_events["events"].append(new_event)
-                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erfolgreich erstellt!"
+                    }).execute()
+                    st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erstellt!"
 
-                if save_json_file_with_lock("events.json", latest_events):
-                    st.session_state["events_data"] = latest_events
-                    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes"]:
-                        st.session_state.pop(key, None)
+                for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes", "last_uploaded_name"]:
+                    st.session_state.pop(key, None)
 
-                    st.session_state["next_tab"] = target_tab_name
+                st.session_state["next_tab"] = target_tab_name
+                st.rerun()
+
+elif selected_tab == "⚙ Admin" and is_admin:
+    st.subheader("⚙️ Admin-Verwaltung")
+    
+    st.markdown("### 👤 Namen im Dropdown verwalten")
+    col_add, col_edit_user, col_del = st.columns(3)
+    
+    with col_add:
+        st.write("**Hinzufügen:**")
+        new_name_input = st.text_input("Neuer Name:", key="input_new_admin_user")
+        if st.button("➕ Hinzufügen", key="btn_add_user"):
+            clean_new_name = new_name_input.strip()
+            if clean_new_name:
+                try:
+                    supabase.table("users").upsert({"name": clean_new_name}).execute()
+                    st.success(f"Name '{clean_new_name}' hinzugefügt!")
                     st.rerun()
-
-elif is_admin and selected_tab == "⚙️ Admin":
-    st.subheader("⚙️ Admin-Bereich")
-
-    if "users" not in votes_data or not isinstance(votes_data["users"], list):
-        votes_data["users"] = ["Anna", "Julian", "Matthias"]
-
-    st.markdown("---")
-    st.write("### 👥 Nutzer verwalten")
-
-    with st.expander("➕ Neuen Nutzer anlegen", expanded=False):
-        new_user_name = st.text_input("Name des neuen Nutzers", key="add_user_input")
-        if st.button("Nutzer anlegen", key="add_user_btn"):
-            clean_name = new_user_name.strip()
-            if clean_name:
-                latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
-                if clean_name not in latest_votes_file["users"]:
-                    latest_votes_file["users"].append(clean_name)
-                    latest_votes_file["users"].sort(key=str.lower)
-                    
-                    if save_json_file_with_lock("votes.json", latest_votes_file):
-                        st.session_state["votes_data"] = latest_votes_file
-                        st.success(f"Nutzer '{clean_name}' hinzugefügt!")
-                        st.rerun()
-                else:
-                    st.warning(f"Nutzer '{clean_name}' existiert bereits.")
+                except Exception as e:
+                    st.error(f"Fehler: {e}")
             else:
-                st.warning("Bitte gib einen Namen ein.")
+                st.warning("Bitte Namen eingeben.")
 
-    sorted_admin_users = sorted(votes_data["users"], key=str.lower)
-
-    for user in sorted_admin_users:
-        col_name, col_rename_input, col_btn_rename, col_btn_del = st.columns([2, 2, 1, 1])
-
-        with col_name:
-            st.write(f"👤 **{user}**")
-
-        with col_rename_input:
-            new_name = st.text_input("Neuer Name", value=user, key=f"rename_input_{user}", label_visibility="collapsed")
-
-        with col_btn_rename:
-            if st.button("✏️", key=f"rename_btn_{user}", help=f"Nutzer '{user}' umbenennen"):
-                clean_new_name = new_name.strip()
-                latest_events = load_json_file("events.json", {"events": []})
-                latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
-
-                if clean_new_name and clean_new_name not in latest_votes_file["users"]:
-                    user_index = latest_votes_file["users"].index(user)
-                    latest_votes_file["users"][user_index] = clean_new_name
-                    latest_votes_file["users"].sort(key=str.lower)
-
-                    for ev in latest_events.get("events", []):
-                        if ev.get("created_by") == user:
-                            ev["created_by"] = clean_new_name
-
-                    votes_map_temp = latest_votes_file.get("votes", {})
-                    for ev_id, p_dict in votes_map_temp.items():
-                        if isinstance(p_dict, dict) and user in p_dict:
-                            p_dict[clean_new_name] = p_dict.pop(user)
-                    latest_votes_file["votes"] = votes_map_temp
-
-                    if st.session_state.get("current_user") == user:
-                        st.session_state["current_user"] = clean_new_name
-
-                    if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
-                        st.session_state["events_data"] = latest_events
-                        st.session_state["votes_data"] = latest_votes_file
-                        st.success(f"'{user}' umbenannt!")
+    with col_edit_user:
+        st.write("**Umbenennen:**")
+        removable_users = [u for u in db_users if u != "-- Bitte wählen --"]
+        if removable_users:
+            user_to_rename = st.selectbox("Auswählen:", options=removable_users, key="select_rename_admin_user")
+            new_renamed_input = st.text_input("Neuer Name:", key="input_renamed_user")
+            if st.button("✏️ Umbenennen", key="btn_rename_user"):
+                clean_new_name = new_renamed_input.strip()
+                if clean_new_name and clean_new_name != user_to_rename:
+                    try:
+                        supabase.table("users").upsert({"name": clean_new_name}).execute()
+                        supabase.table("votes").update({"user_name": clean_new_name}).eq("user_name", user_to_rename).execute()
+                        supabase.table("users").delete().eq("name", user_to_rename).execute()
+                        
+                        if st.session_state.get("current_user") == user_to_rename:
+                            st.session_state["current_user"] = clean_new_name
+                            
+                        st.success(f"'{user_to_rename}' wurde in '{clean_new_name}' umbenannt (inkl. Votes)!")
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"Fehler beim Umbenennen: {e}")
+                else:
+                    st.warning("Bitte einen anderen, gültigen neuen Namen eingeben.")
+        else:
+            st.caption("Keine Namen verfügbar.")
 
-        with col_btn_del:
-            if st.button("🗑️", key=f"delete_btn_{user}", help=f"Nutzer '{user}' löschen"):
-                latest_events = load_json_file("events.json", {"events": []})
-                latest_votes_file = load_json_file("votes.json", {"users": [], "votes": {}})
-
-                if len(latest_votes_file["users"]) > 1:
-                    latest_votes_file["users"].remove(user)
-                    votes_map_temp = latest_votes_file.get("votes", {})
-                    for ev_id, p_dict in votes_map_temp.items():
-                        if isinstance(p_dict, dict):
-                            p_dict.pop(user, None)
-                    latest_votes_file["votes"] = votes_map_temp
-
-                    if save_json_file_with_lock("events.json", latest_events) and save_json_file_with_lock("votes.json", latest_votes_file):
-                        st.session_state["events_data"] = latest_events
-                        st.session_state["votes_data"] = latest_votes_file
-                        st.success(f"Nutzer '{user}' gelöscht!")
-                        st.rerun()
+    with col_del:
+        st.write("**Entfernen:**")
+        if removable_users:
+            user_to_delete = st.selectbox("Auswählen:", options=removable_users, key="select_del_admin_user")
+            if st.button("🗑️ Löschen", key="btn_del_user"):
+                try:
+                    supabase.table("votes").delete().eq("user_name", user_to_delete).execute()
+                    supabase.table("users").delete().eq("name", user_to_delete).execute()
+                    
+                    if st.session_state.get("current_user") == user_to_delete:
+                        st.session_state["current_user"] = ""
+                        
+                    st.success(f"Name '{user_to_delete}' und all seine Votes wurden entfernt!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fehler beim Entfernen: {e}")
+        else:
+            st.caption("Keine Namen vorhanden.")
