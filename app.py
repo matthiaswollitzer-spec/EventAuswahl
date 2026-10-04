@@ -218,6 +218,7 @@ def analyze_flyer_with_gemini(image_bytes):
 
     try:
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
+        # Aktualisiert auf das korrekte Gemini Modell gemäß Google Vorgaben
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
 
         prompt = """
@@ -322,7 +323,6 @@ def cancel_edit_mode():
 def render_single_event_card(ev, votes_dict, is_admin=False):
     ev_id = ev.get("id")
 
-    # 1. BILD (DIRECT SWAP: VORSCHAU <-> GROSSER FLYER PER CLICK)
     flyer_data = ev.get("flyer_b64")
     if flyer_data:
         try:
@@ -345,7 +345,6 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
         except Exception:
             st.caption("⚠️ Bild konnte nicht angezeigt werden.")
 
-    # 2. ZUSAGEN / VIELLEICHT DROPDOWN (COMBOBOX)
     event_votes = votes_dict.get(ev_id, {})
     
     yes_list = sorted([user for user, status in event_votes.items() if status == "yes"], key=str.lower)
@@ -401,7 +400,6 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
             if st.button("❌ Absagen", key=f"vote_no_{ev_id}"):
                 update_vote_status_db(ev_id, current_user, "none")
 
-    # 3. DETAILS DROPDOWN
     title_text = ev.get('title', 'Unbenanntes Event')
     details_title = f"📌 {title_text} - Details (Uhrzeit, Ort, Beschreibung)"
     
@@ -421,7 +419,6 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
             args=(ev, flyer_data)
         )
 
-    # LÖSCHEN (ADMIN)
     if is_admin:
         if st.button(f"🗑️ Event '{title_text}' löschen (Admin)", key=f"admin_del_direct_{ev_id}"):
             delete_event_completely(ev_id)
@@ -451,10 +448,8 @@ with st.sidebar:
     elif admin_pin_input != "":
         st.error("Falsche PIN")
 
-# 1. Hauptüberschrift oben
 st.markdown('<div class="main-title">📅 Event-Planer</div>', unsafe_allow_html=True)
 
-# 2. User-Auswahl direkt darunter
 USER_NAMES = ["-- Bitte wählen --"] + db_users
 
 if "current_user" not in st.session_state or st.session_state["current_user"] not in USER_NAMES:
@@ -568,7 +563,6 @@ elif selected_tab == "➕ Neues Event":
     else:
         st.subheader("Event hinzufügen")
 
-    # 1. BILD-UPLOAD (Löst automatische KI-Analyse direkt beim Auswählen aus)
     has_image = bool(st.session_state.get("form_flyer_b64"))
 
     if not has_image:
@@ -606,7 +600,6 @@ elif selected_tab == "➕ Neues Event":
                             st.session_state["form_description"] = ai_data["description"]
                 st.rerun()
 
-    # 2. BILD ANZEIGEN & LÖSCHEN MÖGLICH MACHEN
     if st.session_state.get("form_flyer_b64"):
         st.write("**Vorschau des Event-Bildes:**")
         try:
@@ -624,7 +617,6 @@ elif selected_tab == "➕ Neues Event":
     st.markdown("---")
     st.write("### Event-Daten")
 
-    # 3. FORMULAR FÜR DIE TEXTFELDER
     with st.form("event_input_form", clear_on_submit=False):
         f_title = st.text_input("Titel*", value=st.session_state.get("form_title", ""))
         
@@ -686,7 +678,8 @@ elif selected_tab == "➕ Neues Event":
                 st.session_state["next_tab"] = target_tab_name
                 st.rerun()
 
-elif selected_tab == "⚙ Admin" and is_admin:
+# HIER WAR DER FEHLER: Korrigiert auf "⚙️ Admin" (mit Emoji wie in tab_titles)
+elif selected_tab == "⚙️ Admin" and is_admin:
     st.subheader("⚙️ Admin-Verwaltung")
     
     st.markdown("### 👤 Namen im Dropdown verwalten")
