@@ -218,19 +218,21 @@ def analyze_flyer_with_gemini(image_bytes):
 
     try:
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
-        # Aktualisiert auf das korrekte Gemini Modell gemäß Google Vorgaben
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
 
-        prompt = """
-        Analysiere diesen Event-Flyer und extrahiere die folgenden Informationen als JSON:
-        {
-          "title": "Titel des Events",
-          "date": "YYYY-MM-DD",
-          "time": "HH:MM",
-          "location": "Ort / Location",
-          "description": "Kurze Event-Beschreibung"
-        }
-        Falls ein Feld nicht auf dem Flyer steht, gib als Wert einen leeren String "" an.
+        current_year = datetime.date.today().year  # Dynamisch das aktuelle Jahr (2026)
+
+        prompt = f"""
+        Analysiere diesen Event-Flyer und extrahiere die Informationen so gut wie möglich als JSON. 
+        Sei kulant und nimm das, was du am ehesten zuordnen kannst:
+        {{
+          "title": "Titel des Events (z.B. Halloween Bash)",
+          "date": "YYYY-MM-DD (Falls auf dem Flyer nur Tag und Monat wie '31.10.' stehen, ergänze automatisch das aktuelle Jahr {current_year}, sodass z.B. '{current_year}-10-31' entsteht)",
+          "time": "Uhrzeit im Format HH:MM, falls vorhanden (z.B. '20:00')",
+          "location": "Hauptveranstaltungsort oder Location",
+          "description": "Zusatzinfos wie Floors, DJs (z.B. DJ Gandi) oder Beschreibung"
+        }}
+        Falls ein Feld absolut nicht auffindbar ist, gib einen leeren String "" aus.
         Antworte AUSSCHLIESSLICH im reinen JSON-Format ohne Markdown-Codeblöcke.
         """
 
@@ -252,15 +254,10 @@ def analyze_flyer_with_gemini(image_bytes):
             if text.endswith("```"):
                 text = text[:-3]
             return json.loads(text.strip())
-        elif res.status_code in [429, 500, 503]:
-            st.warning("⚠️ Die KI ist gerade überlastet. Bitte erneut versuchen.")
-            return None
         else:
-            st.error(f"Gemini API Fehler ({res.status_code}): {res.text}")
             return None
 
-    except Exception as e:
-        st.error(f"Fehler bei der KI-Analyse: {e}")
+    except Exception:
         return None
 
 
@@ -308,11 +305,12 @@ def prepare_edit_event(ev, flyer_data):
         st.session_state["form_flyer_b64"] = flyer_data
     else:
         st.session_state.pop("form_flyer_b64", None)
+    st.session_state["flyer_analysis_success"] = True
     st.session_state["active_tab"] = "➕ Neues Event"
 
 
 def cancel_edit_mode():
-    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes", "last_uploaded_name"]:
+    for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes", "last_uploaded_name", "flyer_analysis_success"]:
         st.session_state.pop(key, None)
     st.session_state["active_tab"] = "📍 Aktuelle Woche"
 
@@ -588,6 +586,7 @@ elif selected_tab == "➕ Neues Event":
                 with st.spinner("🤖 Gemini analysiert den Flyer automatisch..."):
                     ai_data = analyze_flyer_with_gemini(file_bytes)
                     if ai_data:
+                        st.session_state["flyer_analysis_success"] = True
                         if ai_data.get("title"):
                             st.session_state["form_title"] = ai_data["title"]
                         if ai_data.get("date"):
@@ -598,6 +597,8 @@ elif selected_tab == "➕ Neues Event":
                             st.session_state["form_location"] = ai_data["location"]
                         if ai_data.get("description"):
                             st.session_state["form_description"] = ai_data["description"]
+                    else:
+                        st.session_state["flyer_analysis_success"] = False
                 st.rerun()
 
     if st.session_state.get("form_flyer_b64"):
@@ -606,10 +607,48 @@ elif selected_tab == "➕ Neues Event":
             prev_img = base64.b64decode(st.session_state["form_flyer_b64"])
             st.image(prev_img, width=300)
             
+            # Fehlerprüfung & roter Button zur Wiederholung, falls Analyse fehlgeschlagen
+            if not st.session_state.get("flyer_analysis_success", True):
+                st.markdown("""
+                    <style>
+                    div.stButton > button[data-baseweb="button"]:has(div:contains("⚠️")) {
+                        background-color: #dc3545 !important;
+                        color: white !important;
+                        border: none !important;
+                    }
+                    </style>
+                """, unsafe_allow_html=True)
+                
+                if st.button("⚠️ Analyse fehlgeschlagen – Erneut versuchen", key="btn_retry_analysis"):
+                    file_bytes = st.session_state.get("last_uploaded_bytes")
+                    if not file_bytes:
+                        file_bytes = base64.b64decode(st.session_state["form_flyer_b64"])
+                    
+                    with st.spinner("🤖 Starte KI-Analyse erneut..."):
+                        ai_data = analyze_flyer_with_gemini(file_bytes)
+                        if ai_data:
+                            st.session_state["flyer_analysis_success"] = True
+                            if ai_data.get("title"):
+                                st.session_state["form_title"] = ai_data["title"]
+                            if ai_data.get("date"):
+                                st.session_state["form_date"] = ai_data["date"]
+                            if ai_data.get("time"):
+                                st.session_state["form_time"] = ai_data["time"]
+                            if ai_data.get("location"):
+                                st.session_state["form_location"] = ai_data["location"]
+                            if ai_data.get("description"):
+                                st.session_state["form_description"] = ai_data["description"]
+                            st.success("Analyse erfolgreich!")
+                        else:
+                            st.session_state["flyer_analysis_success"] = False
+                            st.error("Erneute Analyse fehlgeschlagen.")
+                    st.rerun()
+
             if st.button("🗑️ Bild entfernen", key="btn_remove_flyer_img"):
                 st.session_state.pop("form_flyer_b64", None)
                 st.session_state.pop("last_uploaded_bytes", None)
                 st.session_state.pop("last_uploaded_name", None)
+                st.session_state.pop("flyer_analysis_success", None)
                 st.rerun()
         except Exception:
             st.caption("⚠ Bild konnte nicht angezeigt werden.")
@@ -672,13 +711,12 @@ elif selected_tab == "➕ Neues Event":
                     }).execute()
                     st.session_state["add_success_msg"] = f"✅ Event **'{f_title}'** wurde erstellt!"
 
-                for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes", "last_uploaded_name"]:
+                for key in ["edit_event_id", "form_title", "form_date", "form_time", "form_location", "form_description", "form_flyer_b64", "last_uploaded_bytes", "last_uploaded_name", "flyer_analysis_success"]:
                     st.session_state.pop(key, None)
 
                 st.session_state["next_tab"] = target_tab_name
                 st.rerun()
 
-# HIER WAR DER FEHLER: Korrigiert auf "⚙️ Admin" (mit Emoji wie in tab_titles)
 elif selected_tab == "⚙️ Admin" and is_admin:
     st.subheader("⚙️ Admin-Verwaltung")
     
