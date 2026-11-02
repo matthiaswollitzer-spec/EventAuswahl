@@ -436,7 +436,6 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
             if "," in flyer_data:
                 flyer_data = flyer_data.split(",")[1]
 
-            # HTML-Strings komplett linksbündig, um Markdown-Codeblock-Konflikte zu verhindern
             card_html = f"""<input type="checkbox" id="flyer-zoom-{ev_id}" class="flyer-toggle">
 <div class="event-card-layout">
 <label for="flyer-zoom-{ev_id}" class="flyer-img-box" title="Zum Vergrößern / Details antippen">
@@ -482,9 +481,15 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
     current_user = st.session_state.get("current_user", "").strip()
     user_status = event_votes.get(current_user, "none") if current_user else "none"
 
-    expander_title = f"🟢 Rückmeldungen: {len(yes_list)} Zusagen"
-    if maybe_list:
-        expander_title += f", {len(maybe_list)} Vielleicht"
+    has_votes = bool(yes_list or maybe_list)
+    status_icon = "🟢" if has_votes else "⚪"
+
+    if has_votes:
+        expander_title = f"{status_icon} Rückmeldungen: {len(yes_list)} Zusagen"
+        if maybe_list:
+            expander_title += f", {len(maybe_list)} Vielleicht"
+    else:
+        expander_title = f"{status_icon} Rückmeldungen: 0 Rückmeldungen"
 
     with st.expander(expander_title, expanded=False):
         col_yes, col_maybe = st.columns(2)
