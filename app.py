@@ -60,42 +60,78 @@ st.markdown("""
         gap: 8px;
     }
 
-    /* CLIENT-SIDE FLYER-ZOOM OHNE NEULADEN */
+    /* KOMPRIMIERTE ANSICHT & ZOOM-LOGIK */
     .flyer-toggle {
         display: none;
     }
-    .flyer-container .flyer-full {
-        display: none;
+    .event-card-layout {
+        display: flex;
+        flex-direction: row;
+        gap: 15px;
+        align-items: flex-start;
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 12px;
+        border: 1px solid #e9ecef;
+        margin-bottom: 12px;
+        transition: all 0.2s ease-in-out;
     }
-    .flyer-container .flyer-thumb {
-        width: 120px;
-        max-width: 100%;
+    .flyer-img-box {
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .flyer-img-box img {
+        width: 100px;
         border-radius: 8px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-        cursor: pointer;
         display: block;
-        transition: transform 0.15s ease-in-out;
+        transition: width 0.2s ease;
     }
-    .flyer-container .flyer-hint {
-        font-size: 0.78em;
-        color: #666;
-        font-weight: 500;
-        display: block;
-        margin-top: 4px;
-        margin-bottom: 8px;
+    .event-info-box {
+        flex-grow: 1;
     }
-    .flyer-toggle:checked + .flyer-container .flyer-thumb,
-    .flyer-toggle:checked + .flyer-container .flyer-hint {
-        display: none !important;
+    .event-title {
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: #1f1f1f;
+        margin: 0 0 6px 0;
     }
-    .flyer-toggle:checked + .flyer-container .flyer-full {
-        display: block !important;
+    .event-meta {
+        font-size: 0.9rem;
+        color: #555;
+        margin: 3px 0;
+    }
+    .event-desc {
+        font-size: 0.9rem;
+        color: #444;
+        margin-top: 6px;
+    }
+    
+    /* ZUSÄTZLICHE INFOS & BUTTONS (STANDARDMÄSSIG VERSTECKT) */
+    .event-expanded-details {
+        display: none;
+    }
+
+    /* UMSCHALTUNG BEI KLICK AUF DAS BILD */
+    .flyer-toggle:checked + .event-card-layout {
+        flex-direction: column;
+    }
+    .flyer-toggle:checked + .event-card-layout .flyer-img-box {
         width: 100%;
+        text-align: center;
+        margin-bottom: 10px;
+    }
+    .flyer-toggle:checked + .event-card-layout .flyer-img-box img {
+        width: 100% !important;
         max-width: 100%;
-        border-radius: 8px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-        cursor: pointer;
-        margin-bottom: 12px;
+    }
+    .flyer-toggle:checked + .event-card-layout .event-expanded-details {
+        display: block !important;
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid #ddd;
+        width: 100%;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -114,10 +150,8 @@ supabase = init_supabase()
 
 
 def cleanup_old_events():
-    """Löscht automatisch Events aus Supabase, deren Datum älter als 7 Tage ist (inklusive dazugehöriger Votes)."""
     try:
         cutoff_date = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-        
         old_events = supabase.table("events").select("id").lt("date", cutoff_date).execute()
         if old_events.data:
             old_ids = [ev["id"] for ev in old_events.data]
@@ -129,7 +163,6 @@ def cleanup_old_events():
 
 
 def load_users_db():
-    """Lädt die Namensliste aus der Supabase 'users'-Tabelle."""
     default_names = ["Anna", "Ben", "Christian", "Daniela", "Julian", "Laura", "Max", "Sarah", "Stefan"]
     try:
         res = supabase.table("users").select("name").order("name").execute()
@@ -146,10 +179,8 @@ def load_users_db():
 def load_all_data():
     try:
         cleanup_old_events()
-
         events_res = supabase.table("events").select("*").execute()
         votes_res = supabase.table("votes").select("*").execute()
-        
         events = events_res.data if events_res.data else []
         
         votes_map = {}
@@ -184,14 +215,12 @@ def update_vote_status_db(ev_id, user_name, new_status):
                 },
                 on_conflict="event_id,user_name"
             ).execute()
-            
         st.rerun()
     except Exception as e:
         st.error(f"Fehler beim Speichern der Stimme: {e}")
 
 
 def delete_event_completely(ev_id):
-    """Löscht ein Event und alle zugehörigen Votes."""
     try:
         supabase.table("votes").delete().eq("event_id", ev_id).execute()
         supabase.table("events").delete().eq("id", ev_id).execute()
@@ -213,24 +242,22 @@ def image_to_base64(image):
 def analyze_flyer_with_gemini(image_bytes):
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
-        st.error("Kein GEMINI_API_KEY in den Secrets konfiguriert.")
         return None
 
     try:
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
-
-        current_year = datetime.date.today().year  # Dynamisch das aktuelle Jahr (2026)
+        current_year = datetime.date.today().year
 
         prompt = f"""
-        Analysiere diesen Event-Flyer und extrahiere die Informationen so gut wie möglich als JSON. 
+        Analysiere diesen Event-Flyer und extrahiere die Informationen so gut wie möglich als JSON.
         Sei kulant und nimm das, was du am ehesten zuordnen kannst:
         {{
-          "title": "Titel des Events (z.B. Halloween Bash)",
+          "title": "Titel des Events",
           "date": "YYYY-MM-DD (Falls auf dem Flyer nur Tag und Monat wie '31.10.' stehen, ergänze automatisch das aktuelle Jahr {current_year}, sodass z.B. '{current_year}-10-31' entsteht)",
-          "time": "Uhrzeit im Format HH:MM, falls vorhanden (z.B. '20:00')",
+          "time": "Uhrzeit im Format HH:MM, falls vorhanden",
           "location": "Hauptveranstaltungsort oder Location",
-          "description": "Zusatzinfos wie Floors, DJs (z.B. DJ Gandi) oder Beschreibung"
+          "description": "Zusatzinfos wie Floors, DJs oder Beschreibung"
         }}
         Falls ein Feld absolut nicht auffindbar ist, gib einen leeren String "" aus.
         Antworte AUSSCHLIESSLICH im reinen JSON-Format ohne Markdown-Codeblöcke.
@@ -246,7 +273,6 @@ def analyze_flyer_with_gemini(image_bytes):
         }
 
         res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
-        
         if res.status_code == 200:
             text = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
             if text.startswith("```json"):
@@ -256,15 +282,13 @@ def analyze_flyer_with_gemini(image_bytes):
             return json.loads(text.strip())
         else:
             return None
-
     except Exception:
         return None
 
 
 def format_german_date(date_obj):
     weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
-    weekday = weekdays[date_obj.weekday()]
-    return f"{weekday}, {date_obj.strftime('%d.%m.%Y')}"
+    return f"{weekdays[date_obj.weekday()]}, {date_obj.strftime('%d.%m.%Y')}"
 
 
 today = datetime.date.today()
@@ -285,7 +309,6 @@ def get_target_tab_name(date_obj):
 def is_duplicate_event(events, title, date_str, current_event_id=None):
     clean_title = title.strip().lower()
     clean_date = date_str.strip()
-
     for ev in events:
         if current_event_id and ev.get("id") == current_event_id:
             continue
@@ -316,140 +339,47 @@ def cancel_edit_mode():
 
 
 # ---------------------------------------------------------
-# 4. SINGLE EVENT CARD RENDERER
-# ---------------------------------------------------------
-def render_single_event_card(ev, votes_dict, is_admin=False):
-    ev_id = ev.get("id")
-
-    flyer_data = ev.get("flyer_b64")
-    if flyer_data:
-        try:
-            if "," in flyer_data:
-                flyer_data = flyer_data.split(",")[1]
-
-            st.markdown(
-                f"""
-                <div style="margin-bottom: 12px;">
-                    <input type="checkbox" id="flyer-zoom-{ev_id}" class="flyer-toggle">
-                    <label for="flyer-zoom-{ev_id}" class="flyer-container" style="display: block; cursor: pointer;">
-                        <img src="data:image/jpeg;base64,{flyer_data}" class="flyer-thumb">
-                        <span class="flyer-hint">🔍 Flyer tippen zum Vergrößern</span>
-                        <img src="data:image/jpeg;base64,{flyer_data}" class="flyer-full">
-                    </label>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        except Exception:
-            st.caption("⚠️ Bild konnte nicht angezeigt werden.")
-
-    event_votes = votes_dict.get(ev_id, {})
-    
-    yes_list = sorted([user for user, status in event_votes.items() if status == "yes"], key=str.lower)
-    maybe_list = sorted([user for user, status in event_votes.items() if status == "maybe"], key=str.lower)
-
-    current_user = st.session_state.get("current_user", "").strip()
-    user_status = event_votes.get(current_user, "none") if current_user else "none"
-
-    vote_count = len(yes_list) + len(maybe_list)
-    has_votes = vote_count > 0
-
-    if has_votes:
-        expander_title = f"🟢 Rückmeldungen: {len(yes_list)} Zusagen"
-        if maybe_list:
-            expander_title += f", {len(maybe_list)} Vielleicht"
-    else:
-        expander_title = f"👥 Rückmeldungen: 0 Rückmeldungen"
-
-    with st.expander(expander_title, expanded=False):
-        col_yes, col_maybe = st.columns(2)
-        with col_yes:
-            st.write("**✅ Dabeisein:**")
-            if yes_list:
-                for p in yes_list:
-                    st.write(f"- {p}")
-            else:
-                st.caption("Keine Zusagen")
-
-        with col_maybe:
-            st.write("**❓ Vielleicht:**")
-            if maybe_list:
-                for p in maybe_list:
-                    st.write(f"- {p}")
-            else:
-                st.caption("Keine Unsicheren")
-
-        st.markdown("---")
-        st.write("**Deine Rückmeldung:**")
-        
-        btn_col1, btn_col2, btn_col3 = st.columns(3)
-        
-        with btn_col1:
-            btn_yes_type = "primary" if user_status == "yes" else "secondary"
-            if st.button("✅ Zusage", key=f"vote_yes_{ev_id}", type=btn_yes_type):
-                update_vote_status_db(ev_id, current_user, "yes")
-
-        with btn_col2:
-            btn_maybe_type = "primary" if user_status == "maybe" else "secondary"
-            if st.button("❓ Vielleicht", key=f"vote_maybe_{ev_id}", type=btn_maybe_type):
-                update_vote_status_db(ev_id, current_user, "maybe")
-
-        with btn_col3:
-            if st.button("❌ Absagen", key=f"vote_no_{ev_id}"):
-                update_vote_status_db(ev_id, current_user, "none")
-
-    title_text = ev.get('title', 'Unbenanntes Event')
-    details_title = f"📌 {title_text} - Details (Uhrzeit, Ort, Beschreibung)"
-    
-    with st.expander(details_title, expanded=False):
-        st.write(f"📅 **Datum:** {ev.get('date', 'N/A')}")
-        st.write(f"⏰ **Uhrzeit:** {ev.get('time', 'N/A')}")
-        st.write(f"📍 **Ort:** {ev.get('location', 'N/A')}")
-        if ev.get("description"):
-            st.write(f"💬 **Beschreibung:** {ev.get('description')}")
-        st.caption(f"Erstellt von: {ev.get('created_by', 'Anonym')}")
-
-        st.markdown("---")
-        st.button(
-            "✏️ Event anpassen",
-            key=f"edit_event_btn_{ev_id}",
-            on_click=prepare_edit_event,
-            args=(ev, flyer_data)
-        )
-
-    if is_admin:
-        if st.button(f"🗑️ Event '{title_text}' löschen (Admin)", key=f"admin_del_direct_{ev_id}"):
-            delete_event_completely(ev_id)
-            st.success("Event und alle dazugehörigen Votes erfolgreich gelöscht.")
-            st.rerun()
-
-
-# ---------------------------------------------------------
-# 5. INITIALISIERUNG & DATEN LADEN
+# 4. INITIALISIERUNG & DATEN LADEN
 # ---------------------------------------------------------
 events_data, votes_map = load_all_data()
 db_users = load_users_db()
 
 
 # ---------------------------------------------------------
-# 6. SIDEBAR & REIHENFOLGE: TITEL -> USER-AUSWAHL -> REITER
+# 5. QUERY-PARAM AKTIONEN VERARBEITEN (EDIT / DELETE)
 # ---------------------------------------------------------
 expected_pin = st.secrets.get("ADMIN_PIN", "#together#")
-
 with st.sidebar:
     st.header("⚙️ Optionen")
     admin_pin_input = st.text_input("🔑 Admin PIN", type="password", key="sidebar_admin_pin")
     is_admin = (admin_pin_input == expected_pin)
-
     if is_admin:
         st.success("Admin-Modus aktiv")
     elif admin_pin_input != "":
         st.error("Falsche PIN")
 
+if "edit" in st.query_params:
+    target_id = st.query_params["edit"]
+    for ev in events_data:
+        if ev.get("id") == target_id:
+            prepare_edit_event(ev, ev.get("flyer_b64"))
+            st.query_params.clear()
+            st.rerun()
+
+if is_admin and "delete" in st.query_params:
+    target_id = st.query_params["delete"]
+    delete_event_completely(target_id)
+    st.query_params.clear()
+    st.success("Event erfolgreich gelöscht.")
+    st.rerun()
+
+
+# ---------------------------------------------------------
+# 6. HEADER & BENUTZER-AUSWAHL
+# ---------------------------------------------------------
 st.markdown('<div class="main-title">📅 Event-Planer</div>', unsafe_allow_html=True)
 
 USER_NAMES = ["-- Bitte wählen --"] + db_users
-
 if "current_user" not in st.session_state or st.session_state["current_user"] not in USER_NAMES:
     st.session_state["current_user"] = USER_NAMES[0]
 
@@ -458,7 +388,6 @@ selected_user = st.selectbox(
     options=USER_NAMES,
     index=USER_NAMES.index(st.session_state["current_user"])
 )
-
 st.session_state["current_user"] = "" if selected_user == "-- Bitte wählen --" else selected_user
 
 if "add_success_msg" in st.session_state:
@@ -490,7 +419,110 @@ selected_tab = st.segmented_control(
 
 
 # ---------------------------------------------------------
-# 8. EVENTS SORTIEREN & FILTERN
+# 8. SINGLE EVENT CARD RENDERER
+# ---------------------------------------------------------
+def render_single_event_card(ev, votes_dict, is_admin=False):
+    ev_id = ev.get("id")
+    title = ev.get('title', 'Unbenanntes Event')
+    date = ev.get('date', 'N/A')
+    time = ev.get('time', '')
+    location = ev.get('location', 'N/A')
+    description = ev.get('description', '')
+    created_by = ev.get('created_by', 'Anonym')
+    flyer_data = ev.get("flyer_b64")
+
+    if flyer_data:
+        try:
+            if "," in flyer_data:
+                flyer_data = flyer_data.split(",")[1]
+
+            # HTML-Strings komplett linksbündig, um Markdown-Codeblock-Konflikte zu verhindern
+            card_html = f"""<input type="checkbox" id="flyer-zoom-{ev_id}" class="flyer-toggle">
+<div class="event-card-layout">
+<label for="flyer-zoom-{ev_id}" class="flyer-img-box" title="Zum Vergrößern / Details antippen">
+<img src="data:image/jpeg;base64,{flyer_data}">
+</label>
+<div class="event-info-box">
+<div class="event-title">{title}</div>
+{"<div class='event-meta'>⏰ <b>Uhrzeit:</b> " + time + "</div>" if time else ""}
+<div class="event-meta">📍 <b>Ort:</b> {location}</div>
+<div class="event-expanded-details">
+<div class="event-meta">📅 <b>Datum:</b> {date}</div>
+{"<div class='event-desc'>💬 <b>Beschreibung:</b> " + description + "</div>" if description else ""}
+<div style="font-size: 0.78em; color: #888; margin-top: 8px; margin-bottom: 12px;">Erstellt von: {created_by}</div>
+<div style="display: flex; gap: 10px; margin-top: 10px;">
+<a href="?edit={ev_id}" style="background-color: #f0f2f6; color: #262730; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #d6d8db; display: inline-block;">✏️ Event anpassen</a>
+{('<a href="?delete=' + ev_id + '" style="background-color: #ffeef0; color: #cf222e; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #ffd8d9; display: inline-block;" onclick="return confirm(\'Event wirklich löschen?\');">🗑️ Löschen</a>') if is_admin else ''}
+</div>
+</div>
+</div>
+</div>"""
+            st.markdown(card_html, unsafe_allow_html=True)
+        except Exception:
+            st.caption("⚠️ Bild konnte nicht angezeigt werden.")
+    else:
+        card_html_no_img = f"""<div class="event-card-layout" style="display: block;">
+<div class="event-title">{title}</div>
+<div class="event-meta">📅 <b>Datum:</b> {date} {f"• ⏰ {time}" if time else ""}</div>
+<div class="event-meta">📍 <b>Ort:</b> {location}</div>
+{f'<div class="event-desc">💬 <b>Beschreibung:</b> {description}</div>' if description else ''}
+<div style="font-size: 0.78em; color: #888; margin-top: 8px; margin-bottom: 12px;">Erstellt von: {created_by}</div>
+<div style="display: flex; gap: 10px; margin-top: 10px;">
+<a href="?edit={ev_id}" style="background-color: #f0f2f6; color: #262730; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #d6d8db; display: inline-block;">✏️ Event anpassen</a>
+{('<a href="?delete=' + ev_id + '" style="background-color: #ffeef0; color: #cf222e; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #ffd8d9; display: inline-block;" onclick="return confirm(\'Event wirklich löschen?\');">🗑️ Löschen</a>') if is_admin else ''}
+</div>
+</div>"""
+        st.markdown(card_html_no_img, unsafe_allow_html=True)
+
+    # Rückmeldungen & Abstimmungs-Buttons
+    event_votes = votes_dict.get(ev_id, {})
+    yes_list = sorted([user for user, status in event_votes.items() if status == "yes"], key=str.lower)
+    maybe_list = sorted([user for user, status in event_votes.items() if status == "maybe"], key=str.lower)
+
+    current_user = st.session_state.get("current_user", "").strip()
+    user_status = event_votes.get(current_user, "none") if current_user else "none"
+
+    expander_title = f"🟢 Rückmeldungen: {len(yes_list)} Zusagen"
+    if maybe_list:
+        expander_title += f", {len(maybe_list)} Vielleicht"
+
+    with st.expander(expander_title, expanded=False):
+        col_yes, col_maybe = st.columns(2)
+        with col_yes:
+            st.write("**✅ Dabeisein:**")
+            if yes_list:
+                for p in yes_list:
+                    st.write(f"- {p}")
+            else:
+                st.caption("Keine Zusagen")
+
+        with col_maybe:
+            st.write("**❓ Vielleicht:**")
+            if maybe_list:
+                for p in maybe_list:
+                    st.write(f"- {p}")
+            else:
+                st.caption("Keine Unsicheren")
+
+        st.markdown("---")
+        st.write("**Deine Rückmeldung:**")
+        
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
+        with btn_col1:
+            if st.button("✅ Zusage", key=f"vote_yes_{ev_id}", type="primary" if user_status == "yes" else "secondary"):
+                update_vote_status_db(ev_id, current_user, "yes")
+        with btn_col2:
+            if st.button("❓ Vielleicht", key=f"vote_maybe_{ev_id}", type="primary" if user_status == "maybe" else "secondary"):
+                update_vote_status_db(ev_id, current_user, "maybe")
+        with btn_col3:
+            if st.button("❌ Absagen", key=f"vote_no_{ev_id}"):
+                update_vote_status_db(ev_id, current_user, "none")
+            
+    st.write("---")
+
+
+# ---------------------------------------------------------
+# 9. EVENTS SORTIEREN & FILTERN
 # ---------------------------------------------------------
 def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
     if not event_list:
@@ -498,7 +530,6 @@ def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
         return
 
     sorted_events = sorted(event_list, key=lambda x: (x.get("date", ""), x.get("time", "")))
-
     grouped_events = {}
     for ev in sorted_events:
         d_str = ev.get("date", "")
@@ -514,7 +545,6 @@ def render_event_list(event_list, empty_msg="Keine Events in diesem Bereich."):
             formatted_date = d_str
 
         st.markdown(f'<div class="date-header">{formatted_date}</div>', unsafe_allow_html=True)
-
         for ev in day_events:
             render_single_event_card(ev, votes_map, is_admin=is_admin)
 
@@ -538,7 +568,7 @@ for event in events_data:
 
 
 # ---------------------------------------------------------
-# 9. INHALTE DER EINZELNEN TABS RENDERN
+# 10. INHALTE DER EINZELNEN TABS RENDERN
 # ---------------------------------------------------------
 if selected_tab == "📍 Aktuelle Woche":
     render_event_list(current_week_events, empty_msg="Keine Events in der aktuellen Woche.")
@@ -607,7 +637,6 @@ elif selected_tab == "➕ Neues Event":
             prev_img = base64.b64decode(st.session_state["form_flyer_b64"])
             st.image(prev_img, width=300)
             
-            # Fehlerprüfung & roter Button zur Wiederholung, falls Analyse fehlgeschlagen
             if not st.session_state.get("flyer_analysis_success", True):
                 st.markdown("""
                     <style>
