@@ -60,7 +60,7 @@ st.markdown("""
         gap: 8px;
     }
 
-    /* KOMPRIMIERTE ANSICHT & ZOOM-LOGIK */
+    /* KOMPRIMIERTE ANSICHT & ZOOM-LOGIK (PURE CSS) */
     .flyer-toggle {
         display: none;
     }
@@ -73,7 +73,7 @@ st.markdown("""
         padding: 15px;
         border-radius: 12px;
         border: 1px solid #e9ecef;
-        margin-bottom: 12px;
+        margin-bottom: 8px;
         transition: all 0.2s ease-in-out;
     }
     .flyer-img-box {
@@ -85,7 +85,7 @@ st.markdown("""
         border-radius: 8px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.15);
         display: block;
-        transition: width 0.2s ease;
+        transition: transform 0.15s ease;
     }
     .event-info-box {
         flex-grow: 1;
@@ -107,7 +107,7 @@ st.markdown("""
         margin-top: 6px;
     }
     
-    /* ZUSÄTZLICHE INFOS & BUTTONS (STANDARDMÄSSIG VERSTECKT) */
+    /* ZUSÄTZLICHE INFOS (STANDARDMÄSSIG VERSTECKT) */
     .event-expanded-details {
         display: none;
     }
@@ -128,7 +128,7 @@ st.markdown("""
     }
     .flyer-toggle:checked + .event-card-layout .event-expanded-details {
         display: block !important;
-        margin-top: 12px;
+        margin-top: 10px;
         padding-top: 10px;
         border-top: 1px solid #ddd;
         width: 100%;
@@ -346,32 +346,28 @@ db_users = load_users_db()
 
 
 # ---------------------------------------------------------
-# 5. QUERY-PARAM AKTIONEN VERARBEITEN (EDIT / DELETE)
+# 5. SIDEBAR & PERSISTENTER ADMIN-MODUS
 # ---------------------------------------------------------
 expected_pin = st.secrets.get("ADMIN_PIN", "#together#")
+
+if "is_admin" not in st.session_state:
+    st.session_state["is_admin"] = False
+
 with st.sidebar:
     st.header("⚙️ Optionen")
     admin_pin_input = st.text_input("🔑 Admin PIN", type="password", key="sidebar_admin_pin")
-    is_admin = (admin_pin_input == expected_pin)
+    
+    if admin_pin_input == expected_pin:
+        st.session_state["is_admin"] = True
+    elif admin_pin_input != "" and admin_pin_input != expected_pin:
+        st.session_state["is_admin"] = False
+
+    is_admin = st.session_state["is_admin"]
+
     if is_admin:
         st.success("Admin-Modus aktiv")
     elif admin_pin_input != "":
         st.error("Falsche PIN")
-
-if "edit" in st.query_params:
-    target_id = st.query_params["edit"]
-    for ev in events_data:
-        if ev.get("id") == target_id:
-            prepare_edit_event(ev, ev.get("flyer_b64"))
-            st.query_params.clear()
-            st.rerun()
-
-if is_admin and "delete" in st.query_params:
-    target_id = st.query_params["delete"]
-    delete_event_completely(target_id)
-    st.query_params.clear()
-    st.success("Event erfolgreich gelöscht.")
-    st.rerun()
 
 
 # ---------------------------------------------------------
@@ -419,7 +415,7 @@ selected_tab = st.segmented_control(
 
 
 # ---------------------------------------------------------
-# 8. SINGLE EVENT CARD RENDERER
+# 8. SINGLE EVENT CARD RENDERER (BILD-KLICK-ZOOM + RÜCKMELDUNGEN)
 # ---------------------------------------------------------
 def render_single_event_card(ev, votes_dict, is_admin=False):
     ev_id = ev.get("id")
@@ -431,6 +427,7 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
     created_by = ev.get('created_by', 'Anonym')
     flyer_data = ev.get("flyer_b64")
 
+    # Event Karte mit reinem CSS-Klick-Zoom auf das Bild
     if flyer_data:
         try:
             if "," in flyer_data:
@@ -438,7 +435,7 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
 
             card_html = f"""<input type="checkbox" id="flyer-zoom-{ev_id}" class="flyer-toggle">
 <div class="event-card-layout">
-<label for="flyer-zoom-{ev_id}" class="flyer-img-box" title="Zum Vergrößern / Details antippen">
+<label for="flyer-zoom-{ev_id}" class="flyer-img-box" title="Zum Vergrößern antippen">
 <img src="data:image/jpeg;base64,{flyer_data}">
 </label>
 <div class="event-info-box">
@@ -448,11 +445,7 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
 <div class="event-expanded-details">
 <div class="event-meta">📅 <b>Datum:</b> {date}</div>
 {"<div class='event-desc'>💬 <b>Beschreibung:</b> " + description + "</div>" if description else ""}
-<div style="font-size: 0.78em; color: #888; margin-top: 8px; margin-bottom: 12px;">Erstellt von: {created_by}</div>
-<div style="display: flex; gap: 10px; margin-top: 10px;">
-<a href="?edit={ev_id}" style="background-color: #f0f2f6; color: #262730; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #d6d8db; display: inline-block;">✏️ Event anpassen</a>
-{('<a href="?delete=' + ev_id + '" style="background-color: #ffeef0; color: #cf222e; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #ffd8d9; display: inline-block;" onclick="return confirm(\'Event wirklich löschen?\');">🗑️ Löschen</a>') if is_admin else ''}
-</div>
+<div style="font-size: 0.78em; color: #888; margin-top: 8px;">Erstellt von: {created_by}</div>
 </div>
 </div>
 </div>"""
@@ -465,15 +458,11 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
 <div class="event-meta">📅 <b>Datum:</b> {date} {f"• ⏰ {time}" if time else ""}</div>
 <div class="event-meta">📍 <b>Ort:</b> {location}</div>
 {f'<div class="event-desc">💬 <b>Beschreibung:</b> {description}</div>' if description else ''}
-<div style="font-size: 0.78em; color: #888; margin-top: 8px; margin-bottom: 12px;">Erstellt von: {created_by}</div>
-<div style="display: flex; gap: 10px; margin-top: 10px;">
-<a href="?edit={ev_id}" style="background-color: #f0f2f6; color: #262730; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #d6d8db; display: inline-block;">✏️ Event anpassen</a>
-{('<a href="?delete=' + ev_id + '" style="background-color: #ffeef0; color: #cf222e; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9em; border: 1px solid #ffd8d9; display: inline-block;" onclick="return confirm(\'Event wirklich löschen?\');">🗑️ Löschen</a>') if is_admin else ''}
-</div>
+<div style="font-size: 0.78em; color: #888; margin-top: 8px;">Erstellt von: {created_by}</div>
 </div>"""
         st.markdown(card_html_no_img, unsafe_allow_html=True)
 
-    # Rückmeldungen & Abstimmungs-Buttons
+    # Rückmeldungen & Abstimmungs-Buttons (inkl. Admin-Aktionen)
     event_votes = votes_dict.get(ev_id, {})
     yes_list = sorted([user for user, status in event_votes.items() if status == "yes"], key=str.lower)
     maybe_list = sorted([user for user, status in event_votes.items() if status == "maybe"], key=str.lower)
@@ -522,6 +511,20 @@ def render_single_event_card(ev, votes_dict, is_admin=False):
         with btn_col3:
             if st.button("❌ Absagen", key=f"vote_no_{ev_id}"):
                 update_vote_status_db(ev_id, current_user, "none")
+
+        # Admin / Creator Bearbeiten & Löschen Buttons direkt im Dropdown
+        if is_admin:
+            st.markdown("---")
+            col_act1, col_act2 = st.columns(2)
+            with col_act1:
+                if st.button("✏️ Event anpassen", key=f"edit_btn_{ev_id}"):
+                    prepare_edit_event(ev, ev.get("flyer_b64"))
+                    st.rerun()
+            with col_act2:
+                if st.button("🗑️ Event löschen", key=f"del_btn_{ev_id}", type="primary"):
+                    delete_event_completely(ev_id)
+                    st.session_state["add_success_msg"] = f"✅ Event **'{title}'** wurde erfolgreich gelöscht."
+                    st.rerun()
             
     st.write("---")
 
